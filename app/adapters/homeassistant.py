@@ -51,3 +51,19 @@ class HomeAssistantClient:
         return response[0] if response else []
 
 ha_client = HomeAssistantClient()
+
+# Milestone 2 action boundary
+async def _call_service(self, domain: str, service: str, data: dict) -> dict | list:
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{self.base_url}/api/services/{domain}/{service}",
+                headers=self.headers,
+                json=data,
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as exc:
+        raise HomeAssistantError(f"Home Assistant service call failed: {domain}.{service}") from exc
+
+HomeAssistantClient.call_service = _call_service

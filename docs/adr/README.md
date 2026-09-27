@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-These ADRs capture the decisions that materially shaped Milestone 1. They include lessons from failed experiments as well as successful choices.
+These ADRs capture material architectural decisions, including successful choices, rejected approaches, safety boundaries and lessons learned.
 
 - [001-deterministic-context-before-llm](001-deterministic-context-before-llm.md)
 - [002-home-assistant-calendar-boundary](002-home-assistant-calendar-boundary.md)
@@ -20,3 +20,19 @@ These ADRs capture the decisions that materially shaped Milestone 1. They includ
 - [016-shadow-mode-before-actions](016-shadow-mode-before-actions.md)
 - [017-situation-vs-observation-storage](017-situation-vs-observation-storage.md)
 - [018-evaluator-owns-orchestration](018-evaluator-owns-orchestration.md)
+- [019-candidate-enrichment-contract](019-candidate-enrichment-contract.md)
+- [020-voice-targets-semantic-presence](020-voice-targets-semantic-presence.md)
+- [021-voice-output-behind-policy](021-voice-output-behind-policy.md)
+- [022-stable-location-before-speech](022-stable-location-before-speech.md)
+- [023-judge-attention-not-actions](023-judge-attention-not-actions.md)
+- [024-delivery-not-acknowledgement](024-delivery-not-acknowledgement.md)
+- [025-situation-resolution-primary-anti-nag](025-situation-resolution-primary-anti-nag.md)
+- [026-deterministic-resolution](026-deterministic-resolution.md)
+- [027-occurrence-based-situation-identity](027-occurrence-based-situation-identity.md)
+- [028-record-delivery-after-confirmation](028-record-delivery-after-confirmation.md)
+- [029-policy-before-execution](029-policy-before-execution.md)
+- [030-resolution-before-detection](030-resolution-before-detection.md)
+- [031-strict-llm-output-contract](031-strict-llm-output-contract.md)
+- [032-capability-safe-announcements](032-capability-safe-announcements.md)
+- [033-factual-non-speculative-wording](033-factual-non-speculative-wording.md)
+- [034-configurable-runtime-safety-controls](034-configurable-runtime-safety-controls.md)

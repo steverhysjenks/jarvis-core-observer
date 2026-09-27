@@ -261,3 +261,8 @@ See `docs/roadmap.md`.
 ## Status
 
 **Milestone 1 complete:** autonomous shadow observation is running and producing a clean longitudinal dataset from real household context.
+
+
+## Milestone 2 status (0.7.0)
+
+Safe location-aware proactive voice is implemented behind deterministic policy and remains shadow-by-default. Controlled live delivery, situation dedupe, global cooldown, stable Bermuda room routing, deterministic resolution, and strict Qwen judgement validation have been tested. Final autonomous observer-level live validation remains before enabling normal live operation.

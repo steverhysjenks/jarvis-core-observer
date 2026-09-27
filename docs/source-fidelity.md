@@ -1,5 +1,7 @@
-# Source Fidelity Note
+# Source fidelity
 
-This milestone repository was assembled from the implementation session and the code/configuration captured during that session. Files whose complete live contents were available are represented directly. A small number of supporting modules (notably calendar/history/routine-learning glue) were reconstructed into clean reference implementations from the behaviour and interfaces proven during the session rather than exported byte-for-byte from the running LXC.
+This repository package was assembled from the previously exported Milestone 1 repository plus source and tested behaviour captured during the 2026-09-27 Milestone 2 implementation session.
 
-Before replacing the live deployment from this repository, diff it against `/opt/jarvis-core` on the LXC. The repository is intended as the Git baseline and documentation milestone; the running LXC remains the authoritative copy of any code not explicitly captured during the session.
+The Milestone 2 modules and changes represented here reflect the tested design and code paths from that session, including resolver integration, runtime settings, policy precedence, Qwen validation and announcement constraints. Supporting Milestone 1 modules that were not re-exported from the live LXC remain from the previous package.
+
+Before treating this archive as a byte-for-byte backup of `/opt/jarvis-core`, compare it with the live LXC and prefer the live source where differences exist. Secrets are intentionally excluded.

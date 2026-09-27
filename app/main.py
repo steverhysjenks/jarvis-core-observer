@@ -21,11 +21,11 @@ async def lifespan(app: FastAPI):
         try: await task
         except asyncio.CancelledError: pass
 
-app=FastAPI(title="Jarvis Core",description="Context and proactive intelligence layer for Jarvis",version="0.6.0",lifespan=lifespan)
+app=FastAPI(title="Jarvis Core",description="Context and proactive intelligence layer for Jarvis",version="0.7.0",lifespan=lifespan)
 @app.get("/")
-async def root(): return {"service":"Jarvis Core","status":"online","version":"0.6.0","docs":"/docs"}
+async def root(): return {"service":"Jarvis Core","status":"online","version":"0.7.0","docs":"/docs"}
 @app.get("/health")
-async def health(): return {"status":"healthy","service":"jarvis-core","version":"0.6.0","timestamp":datetime.now(LOCAL_TIMEZONE).isoformat(),"timezone":"Europe/London"}
+async def health(): return {"status":"healthy","service":"jarvis-core","version":"0.7.0","timestamp":datetime.now(LOCAL_TIMEZONE).isoformat(),"timezone":"Europe/London"}
 @app.get("/context/home")
 async def home_context():
     try: return await build_home_context()
