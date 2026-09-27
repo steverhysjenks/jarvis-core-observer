@@ -1,0 +1,10 @@
+image: python:3.13-slim
+
+stages: [test]
+
+syntax-and-tests:
+  stage: test
+  script:
+    - pip install -r requirements.txt pytest
+    - python -m compileall -q app
+    - pytest -q
