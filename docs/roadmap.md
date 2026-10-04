@@ -1,75 +1,45 @@
-# Roadmap
+# Roadmap after 1.1.0
 
-## Milestone 1 - complete
+This file separates ideas from delivered functionality.
 
-- HA adapter and semantic context
-- calendar aggregation through HA
-- primary-user/Bermuda context
-- semantic Recorder history
-- corroborated departure observations
-- routine learner
-- detector framework
-- deterministic enrichment/validity
-- bounded local Qwen Judge
-- fail-closed candidate contracts
-- persistent situation ledger
-- immutable observation history
-- autonomous 60-second shadow Observer
-- runtime status endpoint
-- no action path
+## Context-aware delivery
 
-## Milestone 2 - explicit operational knowledge
+Observer should continue to decide **whether** something is worth communicating. A separate delivery policy should decide **where/how** to communicate it.
 
-Move household meaning out of bespoke Python where practical. Code capabilities/reasoning primitives; configure household semantics.
+The intended direction is home + stable room → EchoMuse voice; away/Work → Home Assistant mobile notification; no suitable route → defer/suppress. This is not implemented in 1.1.0.
 
-Candidate direction:
+## Location history / zones
 
-```yaml
-knowledge:
-  waste_collection:
-    source:
-      type: calendar
-      entities:
-        - calendar.bins
-        - calendar.bins_2
-    rules:
-      preparation:
-        offset_days: -1
-        time: "19:00"
-```
+Live HA zone state is useful current context. Selected durable location history could explain learned behaviours such as a lunchtime walk at Work. A machine-oriented HA calendar is a likely source because it preserves the authoritative-source pattern without putting another location database inside Jarvis.
 
-Do not assume YAML is the permanent store. The eventual goal is teachable durable knowledge.
+## Better calendar semantics
 
-## Milestone 3 - policy and judgement hardening
+The current activity detector uses a bounded blocking-calendar heuristic. Real commitments have semantics: a child activity may or may not consume my time, an all-day event is often context, and location matters. Availability should eventually combine commitment, location, family context and learned behaviour rather than reduce every event to busy/free.
 
-- Pydantic schema validation for Judge responses
-- decision re-evaluation/cooldown policy
-- explicit capability contract
-- observation review/reporting
-- tune Judge from real shadow evidence, not synthetic overfitting
+## Activity improvements
 
-## Milestone 4 - broader evidence
+- per-calendar retrieval health;
+- learned activity similarity rather than the provisional 50% duration rule;
+- activity-specific resolution when the opportunity expires or is completed;
+- broader behaviours as evidence becomes sufficient.
 
-- richer entrance/movement sequences
-- carefully bounded UniFi AP corroboration
-- additional semantic context providers
-- continue to avoid parallel BLE-room algorithms outside Bermuda
+## Observer efficiency
 
-## Milestone 5 - controlled proactive output
+Consider avoiding repeated Qwen judgement for an occurrence which lifecycle already proves cannot announce again, while preserving correct monitor/resolution behaviour.
 
-Only after shadow evidence supports it:
+## Test isolation
 
-- whitelisted notification action
-- explicit interruption policy
-- cooldown/deduplication
-- EchoMuse delivery
-- audit of action outcome
+Move runtime/database-sensitive tests to isolated temporary storage and consider a conventional test runner while keeping deterministic boundary tests.
 
-Home control should remain a later, separately authorised capability.
+## Version management
 
-## Longer term
+Replace the three current version literals in `app/main.py` with one authoritative application version.
 
-- REST + MCP exposure for mature Jarvis Context/Tools
-- integrate selected AI Brain knowledge without making vector retrieval authoritative for operational facts
-- conversational teaching of facts/policies
-- evaluate lighter classifier/judge models where appropriate
+## Music
+
+- multi-room/group playback;
+- extend an active session to additional rooms;
+- Follow Me playback using stable Bermuda presence and preserved queue/position;
+- listener-aware policy;
+- richer history/favourites weighting;
+- dynamic target discovery.

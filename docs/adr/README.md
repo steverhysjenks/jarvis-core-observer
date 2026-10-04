@@ -1,38 +1,12 @@
 # Architecture Decision Records
 
-These ADRs capture material architectural decisions, including successful choices, rejected approaches, safety boundaries and lessons learned.
+These ADRs capture the decisions that shaped Jarvis Core rather than only the final code. They include choices about authority, deterministic policy, model scope and delivery safety.
 
-- [001-deterministic-context-before-llm](001-deterministic-context-before-llm.md)
-- [002-home-assistant-calendar-boundary](002-home-assistant-calendar-boundary.md)
-- [003-dynamic-capabilities-semantic-configuration](003-dynamic-capabilities-semantic-configuration.md)
-- [004-primary-user-context](004-primary-user-context.md)
-- [005-room-sensors-do-not-prove-identity](005-room-sensors-do-not-prove-identity.md)
-- [006-europe-london-time](006-europe-london-time.md)
-- [007-ha-recorder-via-ha-api](007-ha-recorder-via-ha-api.md)
-- [008-correlated-departure-observations](008-correlated-departure-observations.md)
-- [009-explicit-history-windows](009-explicit-history-windows.md)
-- [010-routine-confidence](010-routine-confidence.md)
-- [011-cache-routine-models](011-cache-routine-models.md)
-- [012-detection-vs-interruption](012-detection-vs-interruption.md)
-- [013-explicit-vs-learned-knowledge](013-explicit-vs-learned-knowledge.md)
-- [014-absence-of-evidence](014-absence-of-evidence.md)
-- [015-shared-context-snapshot](015-shared-context-snapshot.md)
-- [016-shadow-mode-before-actions](016-shadow-mode-before-actions.md)
-- [017-situation-vs-observation-storage](017-situation-vs-observation-storage.md)
-- [018-evaluator-owns-orchestration](018-evaluator-owns-orchestration.md)
-- [019-candidate-enrichment-contract](019-candidate-enrichment-contract.md)
-- [020-voice-targets-semantic-presence](020-voice-targets-semantic-presence.md)
-- [021-voice-output-behind-policy](021-voice-output-behind-policy.md)
-- [022-stable-location-before-speech](022-stable-location-before-speech.md)
-- [023-judge-attention-not-actions](023-judge-attention-not-actions.md)
-- [024-delivery-not-acknowledgement](024-delivery-not-acknowledgement.md)
-- [025-situation-resolution-primary-anti-nag](025-situation-resolution-primary-anti-nag.md)
-- [026-deterministic-resolution](026-deterministic-resolution.md)
-- [027-occurrence-based-situation-identity](027-occurrence-based-situation-identity.md)
-- [028-record-delivery-after-confirmation](028-record-delivery-after-confirmation.md)
-- [029-policy-before-execution](029-policy-before-execution.md)
-- [030-resolution-before-detection](030-resolution-before-detection.md)
-- [031-strict-llm-output-contract](031-strict-llm-output-contract.md)
-- [032-capability-safe-announcements](032-capability-safe-announcements.md)
-- [033-factual-non-speculative-wording](033-factual-non-speculative-wording.md)
-- [034-configurable-runtime-safety-controls](034-configurable-runtime-safety-controls.md)
+| ADR | Decision |
+|---|---|
+| 001 | Keep domain data in authoritative sources |
+| 002 | Deterministic qualification before probabilistic judgement |
+| 003 | Semantic media uses retrieval-grounded execution |
+| 004 | Separate communication judgement from delivery policy |
+| 005 | Preserve UNKNOWN and fail closed where feasibility depends on it |
+| 006 | Use semantic occurrence identity for proactive lifecycle |

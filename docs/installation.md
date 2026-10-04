@@ -48,4 +48,4 @@ The deployed source intentionally contains explicit HA entity IDs, selected bloc
 - `app/music/service.py`
 - `app/voice/routing.py`
 
-These should become configuration in a more portable future release; 1.1.0 documents the real deployed source rather than pretending that work is already complete.
+These should become configuration in a more portable future release; 1.1.0 documents the real source captured from the known-good internal deployment rather than pretending that portability work is already complete.

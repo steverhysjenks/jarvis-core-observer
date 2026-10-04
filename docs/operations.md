@@ -24,4 +24,4 @@ Several values are still source-level reference configuration: primary-user enti
 
 ## Backup/release point
 
-The deployed 1.1.0 release was snapshotted after regression and runtime validation. Repository source should be derived from the tested release, not from whichever experimental files happen to exist later on the host.
+The internally labelled `0.7.0` build was snapshotted after regression and runtime validation and is the source promoted into public release 1.1.0. Repository source should be derived from that tested baseline, not from whichever experimental files happen to exist later on the host.

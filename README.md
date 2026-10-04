@@ -1,268 +1,254 @@
-# Jarvis Core - Proactive Home AI Observer
+# Jarvis Core v1.1.0
 
-> **Milestone 1: Autonomous Shadow Observer** - September 2026
+Jarvis started as a logic-based multi-LLM voice router for Home Assistant. V1 proved the routing problem: keep native Home Assistant intents local, classify the requests that remain, choose the right LLM tier, and then call Home Assistant again so the selected conversation agent retains its own tools, entity exposure and permissions.
 
-This repository is the point where my Home Assistant / local LLM work stopped being purely reactive and started becoming something closer to the idea I have had in my head for "Jarvis": an assistant that can understand what is happening around the house, compare it with what normally happens, decide whether something is worth my attention, and eventually speak up when it is genuinely useful.
+That still matters, but it is no longer the whole application.
 
-The important word there is **eventually**.
+**Jarvis Core is now the context, capability and proactive intelligence layer behind Jarvis.** It consumes facts from systems that already own them, turns those facts into bounded evidence, identifies situations worth considering, and only then uses an LLM where judgement genuinely adds value.
 
-At this milestone Jarvis can observe autonomously, build semantic context, detect potentially interesting situations, use deterministic code to establish facts, ask a local Qwen model for a bounded judgement, and record the result. It **cannot act**. There is deliberately no EchoMuse/HA action path in this version.
+The design principle I have kept coming back to is simple:
 
-That is not a missing feature. It is the safety boundary for this stage of the project.
+> **Do not make the LLM responsible for facts I can determine.**
+>
+> Home Assistant, Music Assistant, Garmin and Bermuda remain authoritative for their own domains. Jarvis correlates those facts. Deterministic code decides whether a situation is possible and safe. The LLM is used for the narrower question: *is this actually worth interrupting me about?*
 
-## Why I built this
+This repository is the source and documentation for the public **Jarvis Core 1.1.0** release. The deployed build used to capture this source was internally labelled `0.7.0`; the public version line is reset here to continue forward from V1 / 1.0.0.
 
-My existing voice stack already worked well as a reactive system:
+---
 
-- Home Assistant owns the physical home and exposed entities.
-- EchoMuse provides local voice endpoints on rooted Echo Dot 2s.
-- `jarvis-route` chooses between LOCAL / DESKTOP / CLOUD routes.
-- LiteLLM provides the model gateway.
-- Ollama provides always-on local inference.
+## 1. What changed since V1?
 
-What it did not do was notice things by itself.
+V1 was primarily a **request router**. A person spoke, Jarvis classified the request, and the correct downstream conversation agent answered it.
 
-A conventional HA automation is excellent when I already know the exact trigger and action. What I wanted to explore was the space between a rigid automation and an unconstrained AI agent. For example:
+1.1.0 is an **application platform** around that idea. It can still receive a request, but it can also observe the home without being asked, expose bounded capabilities, retain situation and delivery lifecycle, replay an announcement, control Music Assistant through grounded retrieval, and learn an activity pattern from historical evidence.
 
-- I normally leave at roughly a certain time, but today I am still in the office.
-- Tomorrow is bin day and there is no evidence that I have put the bins out.
-- A calendar event is approaching and current household context makes it relevant.
+The biggest change is therefore not another model. It is the separation of responsibilities:
 
-The goal is not to replace Home Assistant automations with an LLM. The goal is to give Jarvis enough structured context to recognise when something *might* deserve attention, then make the interruption decision separately.
+```text
+Authoritative systems
+        ↓
+Context + evidence
+        ↓
+Deterministic behaviour / detectors
+        ↓
+Enrichment + validation
+        ↓
+Qwen judgement
+        ↓
+Action policy
+        ↓
+Voice delivery
+```
 
-## Where this milestone landed
+The LLM has moved **later** in the decision chain, not earlier.
+
+See [V1 → v1.1.0](docs/v1-to-v1.1.0.md) for the detailed comparison.
+
+---
+
+## 2. What 1.1.0 actually does
+
+### Proactive Observer
+
+Observer runs continuously (60 seconds in the reference deployment), builds a current context snapshot, runs deterministic detectors and evaluates valid candidates. In live mode an `interrupt` judgement can become a voice announcement, but only after the action policy re-checks lifecycle, cooldown, presence, Bermuda room stability and the existence of an explicit voice target.
+
+Implemented detectors include learned departure/routine situations, waste/bin preparation and learned physical-activity opportunities.
+
+### Learned activity opportunities
+
+1.1.0 adds the first behaviour where Jarvis learns from a durable historical source rather than relying on a hard-coded reminder.
+
+Garmin remains authoritative for activity. Historical and new Garmin activities are represented in Home Assistant as `calendar.garmin_activities`. Jarvis reads that calendar, normalises the events, looks for qualified recurring patterns and can identify an opportunity when the current day/time, calendar, completed activity, home state and family constraints support it.
+
+This is deliberately **not** a daily exercise quota. A gym session does not automatically satisfy a walking pattern, and walking is explicitly permitted when children are present. Other constrained activities fail closed if family state is unavailable.
+
+### Music Assistant capability
+
+Jarvis can handle explicit playback and bounded semantic music requests without exposing the entire music library to an LLM. Music Assistant remains authoritative for catalogue identity and playback. Semantic requests are converted into bounded retrieval policy, and the LLM never invents playable URIs.
+
+The implemented music path covers explicit playback, genre, era, era+genre, mood/activity requests, grounded similar-artist retrieval, playback controls and origin-room targeting.
+
+### Repeat last announcement
+
+“Repeat that” is a deterministic capability. Jarvis retrieves the latest eligible proactive delivery, checks its age, resolves the current voice endpoint and re-delivers the exact message. A replay is itself recorded as a delivery.
+
+### Delivery and situation history
+
+SQLite is used for Jarvis-owned lifecycle, not as a replacement for authoritative domain data. The ledger records candidate lifecycle and announcement state. Delivery history records what Jarvis actually said, where it was delivered and the route used. Recent deliveries are exposed through `/api/notifications` and `/notifications`.
+
+---
+
+## 3. Architecture
 
 ```mermaid
 flowchart TD
-    HA[Home Assistant] --> C[Semantic Context]
-    C --> D[Detectors]
-    D --> E[Deterministic Enrichment / Validity]
-    E --> J[Local Qwen Judge]
-    J --> L[Situation Ledger]
-    J --> O[Immutable Observation History]
-    L --> X[No action path]
-    O --> X
+    HA[Home Assistant] --> C[Context builders]
+    B[Bermuda presence] --> HA
+    G[Garmin activity calendar] --> HA
+    MA[Music Assistant] --> MC[Music capability / retrieval]
+
+    C --> O[Observer context]
+    O --> D[Deterministic detectors]
+    D --> E[Enrichment + required facts]
+    E --> J[Qwen judgement]
+    J --> P[Action policy]
+    P --> X[Action executor]
+    X --> V[EchoMuse / HA Assist satellite]
+
+    L[(Situation ledger)] <--> P
+    DH[(Delivery history)] <--> X
+
+    R[Authenticated /request] --> CD[Capability dispatcher]
+    CD --> RC[Replay capability]
+    CD --> MC
+    CD --> S[Unclaimed semantic path]
 ```
 
-The observer wakes every 60 seconds. In the normal case it builds context, finds nothing noteworthy and never calls the LLM. When a detector produces a candidate, deterministic code enriches it with facts before Qwen is allowed to judge whether it should be ignored, monitored or - hypothetically - interrupted.
+The important boundaries are documented in [Architecture](docs/architecture.md).
 
-The result is persisted in SQLite in two forms:
+---
 
-1. `attention_ledger` - one mutable row for the real-world situation.
-2. `attention_observations` - immutable samples showing how the judgement evolves over time.
-
-This gives me both operational deduplication and an audit trail I can use to evaluate whether the AI is actually useful before I let it speak.
-
-## Design principles that emerged
-
-These were not all obvious at the start. Most came from something failing or behaving unexpectedly.
-
-### Home Assistant remains the source of truth
-
-Jarvis does not try to become another home-automation platform. HA owns devices, entity state, Recorder history and calendars. Jarvis consumes those abstractions.
-
-That includes history: even though my HA Recorder is backed by MariaDB, Jarvis uses the HA history API rather than coupling itself to the database schema.
-
-### Semantic context, not 1,300 entities in a prompt
-
-Raw telemetry stays below the context layer. The model should see useful facts such as "user is home", "area is Office", "front entrance opened" or "calendar event starts in 10 minutes", not a dump of every HA entity.
-
-### Bermuda owns room location
-
-I already use Bermuda for BLE presence. I do not want Jarvis inventing a second room-location algorithm from individual Bluetooth proxy distances. Bermuda area/floor/distance are the primary abstraction; proxy distances remain supporting/debug evidence.
-
-PIR and mmWave indicate occupancy/activity. They do **not** identify me: there are children and cats in the house.
-
-### Deterministic facts before probabilistic judgement
-
-This became one of the most important lessons in the project.
-
-Early Qwen tests were allowed to infer whether a departure was late, whether I was still home and how calendar timing related to the candidate. The results were inconsistent. In one test it contradicted supplied state; in another it treated a clearly late departure as being within the historical range.
-
-The fix was architectural, not prompt engineering:
+## 4. Repository layout
 
 ```text
-Detection -> deterministic enrichment -> validity -> LLM judgement -> policy -> action
+.
+├── app/
+│   ├── adapters/       # Home Assistant and Music Assistant boundaries
+│   ├── behaviour/      # learned departures, routines and activity patterns
+│   ├── capabilities/   # bounded request capabilities and dispatcher
+│   ├── context/        # authoritative facts normalised for Jarvis
+│   ├── judgement/      # bounded Ollama/Qwen judgement
+│   ├── music/          # music intent, retrieval, policy and execution
+│   ├── observer/       # detect → enrich → judge → policy → act lifecycle
+│   ├── storage/        # Jarvis situation and delivery lifecycle
+│   ├── voice/          # request, routing, announcements and replay
+│   └── web/            # notification-history view
+├── config/
+│   └── jarvis.env.example
+├── deployment/systemd/
+│   └── jarvis-core.service
+├── docs/
+│   ├── architecture.md
+│   ├── v1-to-v1.1.0.md
+│   ├── observer.md
+│   ├── capabilities.md
+│   ├── music-assistant.md
+│   ├── activity-intelligence.md
+│   ├── data-ownership.md
+│   ├── installation.md
+│   ├── api.md
+│   ├── testing-and-release.md
+│   ├── operations.md
+│   ├── roadmap.md
+│   ├── lessons-learned.md
+│   └── adr/
+├── test_*.py
+├── CHANGELOG.md
+├── SECURITY.md
+└── requirements.txt
 ```
 
-Python calculates facts such as `minutes_from_typical`, `outside_historical_range` and `calendar_starts_in_minutes`. Qwen is told those facts are authoritative and only judges whether the situation deserves attention.
+---
 
-If required deterministic facts are missing, the candidate fails closed and never reaches Qwen.
+## 5. Request flow versus Observer flow
 
-### Detection is not interruption
+These are related but different.
 
-A detector is allowed to say "this is potentially noteworthy". It is **not** allowed to decide that I should be interrupted.
-
-That separation is essential if this ever becomes proactive in the real house.
-
-### Explicit knowledge is different from learned behaviour
-
-A repeated 15:14 departure can be learned from history. "Bins can go out after 19:00 the night before collection" is a household rule I already know.
-
-Jarvis should not statistically relearn explicit facts. This milestone still has some domain knowledge in Python; the next milestone is to make operational household knowledge data-driven and eventually teachable conversationally.
-
-### Absence of evidence needs an observation contract
-
-"The door did not open" only means something if the observation source was available and the time window was valid. A future window, unavailable entity or missing history must remain **unknown**, not become false evidence.
-
-## What is running now
-
-Current reference deployment:
-
-| Component | Role |
-|---|---|
-| Jarvis Core | Debian LXC, FastAPI, observer/context service |
-| Home Assistant | State, calendars, Recorder history, semantic home boundary |
-| Ollama | Local judgement inference |
-| Qwen3 4B | Current judgement model |
-| LiteLLM | Existing model gateway; direct Ollama is used for this milestone's component validation |
-| Bermuda | Identity-linked room presence abstraction |
-| EchoMuse | Existing voice endpoint; **not connected to Observer actions yet** |
-| SQLite | Shadow ledger and observation history |
-
-The reference deployment uses `Europe/London` via `zoneinfo`, not manually managed GMT/BST offsets.
-
-## Repository layout
+A request starts because somebody asked Jarvis to do something:
 
 ```text
-app/
-  adapters/             External-system adapters
-  behaviour/            Learned behavioural models
-  context/              Semantic current/history/evidence context
-  judgement/            Bounded LLM judgement
-  observer/
-    detectors/           Candidate generation
-    context.py           Bounded observer snapshot
-    enrichment.py        Deterministic facts + validity contracts
-    evaluator.py         Candidate -> Judge -> Ledger orchestration
-    runner.py            Autonomous shadow loop
-  storage/               SQLite attention ledger
-
-docs/
-  architecture.md
-  development-journey.md
-  testing-and-shadow-mode.md
-  security-and-safety.md
-  roadmap.md
-  adr/                    Architecture Decision Records
-examples/
-  jarvis.env.example
-systemd/
-  jarvis-core.service
-scripts/
-  inspect-shadow.py
+/request
+  → capability dispatcher
+  → replay or music if claimed
+  → otherwise wider semantic routing
 ```
 
-## API surface at this milestone
+Observer starts because the world may have changed:
 
-- `GET /health`
-- `GET /context/home`
-- `GET /context/user`
-- `GET /context/calendar?days=7`
-- `GET /context/history?hours=24`
-- `GET /context/observer`
-- `GET /observer/status`
-
-`/context/calendar` can remain relatively rich. `/context/observer` is deliberately bounded to what matters to proactive reasoning now.
-
-## Shadow mode
-
-The observer runs every 60 seconds. A healthy idle system looks roughly like:
-
-```json
-{
-  "running": true,
-  "mode": "shadow",
-  "interval_seconds": 60,
-  "cycles_completed": 2,
-  "last_error": null,
-  "last_candidate_count": 0,
-  "last_evaluation_count": 0
-}
+```text
+60-second Observer cycle
+  → build current context
+  → run detectors
+  → enrich candidate with deterministic facts
+  → reject incomplete/invalid candidates
+  → ask Qwen to ignore / monitor / interrupt
+  → apply action policy
+  → announce only if every gate passes
 ```
 
-Zero candidates means zero Qwen calls. The normal idle path is intentionally cheap.
+That distinction is important. A capability owns a bounded request. A detector proposes a situation. Qwen does not get to turn an impossible situation into a possible one.
 
-Even if Qwen returns `interrupt`, this milestone records:
+---
 
-```json
-"action_taken": false
+## 6. Authoritative data sources
+
+Jarvis deliberately does not become a second database for everything it can see.
+
+| Domain | Authority | Jarvis role |
+|---|---|---|
+| Home state/entities | Home Assistant | read and correlate |
+| Room presence | Bermuda via Home Assistant | current/stable room evidence |
+| Calendar commitments | HA calendar integrations | opportunity/context evidence |
+| Physical activity | Garmin → HA activity calendar | learn patterns and compare today |
+| Music catalogue/playback | Music Assistant | bounded retrieval and control |
+| Situation lifecycle | Jarvis ledger | candidate-specific state |
+| What Jarvis said | Jarvis deliveries | replay/audit history |
+
+See [Data ownership](docs/data-ownership.md).
+
+---
+
+## 7. Installation
+
+The reference deployment is a Debian LXC running FastAPI/Uvicorn under systemd. The application expects Home Assistant, Music Assistant and an Ollama-compatible judgement endpoint to exist already.
+
+Start with [Installation](docs/installation.md), then review the reference-specific entity IDs described in [Operations](docs/operations.md). This is source from a real deployment, not a pretend generic framework; a few entity/calendar/room mappings are intentionally explicit and must be adapted for another home.
+
+---
+
+## 8. Testing and release confidence
+
+1.1.0 was not promoted because one happy-path demo worked. The release gate was:
+
+```text
+Change
+  → compile
+  → existing Jarvis regression pack
+  → ledger/lifecycle checks
+  → safety/action-boundary checks
+  → activity/Garmin checks
+  → integration check
+  → restart
+  → health + Observer status
 ```
 
-There is no implementation available to turn that decision into an announcement or HA action.
+The release candidate completed **16/16 regression scripts successfully** before deployment. The activity-specific regression contains ten deterministic cases covering satisfaction, family constraints, calendar gaps and semantic candidate identity.
 
-## Two initial detector families
+See [Testing and release](docs/testing-and-release.md).
 
-### Learned routine departure deviation
+---
 
-HA Recorder history is correlated using physical front-door cycles and `person.steve` state transitions. A routine learner clusters corroborated departure observations by weekday/time and only exposes sufficiently recurrent patterns as actionable routines.
+## 9. What is deliberately not claimed as 1.1.0
 
-A candidate is generated only within a bounded window around an actionable routine. Deterministic enrichment then establishes lateness/range facts before Qwen sees it.
+There are several obvious next steps, but they are not silently presented as finished features:
 
-This was useful as the first detector because it forced the project to separate observed state, historical evidence, learned behaviour and judgement.
+- context-aware delivery to HA mobile notifications when away or at Work;
+- durable location-history/calendar evidence for selected HA zones;
+- semantic calendar commitment interpretation beyond the current bounded heuristic;
+- per-calendar retrieval health rather than the current structural calendar capability;
+- richer activity similarity instead of the provisional duration threshold;
+- activity-specific resolver lifecycle;
+- avoiding unnecessary repeated Qwen judgement for an already-announced occurrence;
+- stronger isolation of regression tests from the production SQLite database;
+- one authoritative application-version constant;
+- multi-room/follow-me Music Assistant playback.
 
-### Possible bins not put out
+The roadmap is in [docs/roadmap.md](docs/roadmap.md).
 
-The waste calendars are already populated in HA. Jarvis calculates the preparation window (currently from 19:00 the previous evening), then checks entrance activity during the valid observation window.
+---
 
-No entrance activity is **evidence**, not proof, that the bins may have been forgotten. The detector therefore produces `possible_bins_not_put_out`, not `bins_not_put_out`.
+## 10. Where V1 still fits
 
-This second use case proved that the architecture could combine explicit household knowledge, scheduled context and absence-of-event evidence rather than only learned routines.
+V1's lessons have not been thrown away. LiteLLM is still a model gateway, not the semantic brain. Home Assistant remains the authority for its tools and entities. Cheap deterministic handling should happen before expensive probabilistic handling. Boundaries should be proven independently before they are composed.
 
-## Things that went wrong - and why they mattered
-
-This repository deliberately documents the mistakes because they shaped the architecture.
-
-- **VMID collision:** I initially treated the main Proxmox node as the whole cluster. VMID 118 was already allocated on the secondary node. Jarvis Core became VMID 122. Lesson: cluster identity is cluster-wide.
-- **HA token exposure:** a long-lived token was accidentally shown while inspecting the environment file. Secrets must never be committed; use a dedicated HA user/token and rotate exposed credentials.
-- **Implicit history windows:** HA history tests over 7/28 days returned misleading slices until queries explicitly bounded both start and end.
-- **Baseline history record:** the first HA Recorder record is the state at the start of the period, not necessarily a transition. Treating it as an event creates false evidence.
-- **Future-window absence:** querying a future interval initially looked like "no door activity". It is actually unknown. Evidence now reports `future_window` / `evidence_available=false`.
-- **LLM factual reasoning:** Qwen was too willing to derive timing/state facts itself. Those calculations moved into deterministic enrichment.
-- **Malformed test candidate:** a synthetic test used a flattened schema while the real detector nests `routine` and `current`. This exposed the need for a fail-closed enrichment contract.
-- **Candidate identity mismatch:** the ledger initially expected routine identity fields at the top level. The detector stored them under `routine`. Candidate identity now follows the producer schema.
-- **Plausible but invented action:** Qwen proposed "send a message to your office" even though no such capability existed. This reinforced the need for a future explicit action-capability contract.
-
-## Running locally
-
-This is a reference homelab project rather than a one-command product installer. The current service expects Python 3, a venv, Home Assistant access and an Ollama-compatible `/api/chat` endpoint.
-
-```bash
-python3 -m venv /opt/jarvis-core/.venv
-/opt/jarvis-core/.venv/bin/pip install -r requirements.txt
-cp examples/jarvis.env.example /etc/jarvis-core/jarvis.env
-```
-
-Install the systemd unit, then:
-
-```bash
-systemctl daemon-reload
-systemctl enable --now jarvis-core
-curl -s http://127.0.0.1:8000/health | jq
-curl -s http://127.0.0.1:8000/observer/status | jq
-```
-
-See `docs/deployment.md` for the fuller deployment notes.
-
-## What this is not
-
-This is not a general autonomous agent, a Home Assistant replacement, a generic person tracker, or a system I currently trust to operate the house without supervision.
-
-It is a deliberately constrained context and attention engine whose decisions can be measured before actions are introduced.
-
-## Next milestone
-
-The next stage is not "add more hard-coded detectors". It is to make explicit household knowledge/rules data-driven so that new concepts are configured or taught rather than implemented as `bins.py`, `washing.py`, `school.py`, etc.
-
-After that comes decision-policy/cooldown work, stronger schema validation, richer evidence correlation, and only much later a tightly whitelisted action layer.
-
-See `docs/roadmap.md`.
-
-## Status
-
-**Milestone 1 complete:** autonomous shadow observation is running and producing a clean longitudinal dataset from real household context.
-
-
-## Milestone 2 status (0.7.0)
-
-Safe location-aware proactive voice is implemented behind deterministic policy and remains shadow-by-default. Controlled live delivery, situation dedupe, global cooldown, stable Bermuda room routing, deterministic resolution, and strict Qwen judgement validation have been tested. Final autonomous observer-level live validation remains before enabling normal live operation.
+What changed is the scope of Jarvis itself. V1 answered **“which model should answer this request?”**. Jarvis Core now also asks **“what do I know, what is actually possible, is this situation meaningful, and should I say anything at all?”**

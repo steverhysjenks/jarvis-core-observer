@@ -8,7 +8,7 @@ The release process therefore treats regression as a gate rather than a final co
 
 ## 1.1.0 gate
 
-Before the deployed 1.1.0 restart, the complete standalone test pack reported **16 passed, 0 failed**:
+Before the known-good internal `0.7.0` deployment was captured for this public 1.1.0 release, the complete standalone test pack reported **16 passed, 0 failed**:
 
 - `test_actionable_routines.py`
 - `test_activity_observer.py`
@@ -43,7 +43,7 @@ change
 → /observer/status
 ```
 
-The deployed 1.1.0 health endpoint returned version `1.1.0`; Observer was live on a 60-second interval with `last_error: null` after restart.
+Runtime validation of the captured internal build returned version `0.7.0`; Observer was live on a 60-second interval with `last_error: null` after restart. The public repository then resets the version line to `1.1.0`, so a deployment from this repository should be validated again and should report `1.1.0`.
 
 ## Known test hygiene debt
 
