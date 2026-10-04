@@ -1,10 +1,11 @@
 # Jarvis Core v1.1.0
 
-Jarvis started as a logic-based multi-LLM voice router for Home Assistant. V1 proved the routing problem: keep native Home Assistant intents local, classify the requests that remain, choose the right LLM tier, and then call Home Assistant again so the selected conversation agent retains its own tools, entity exposure and permissions.
+Jarvis started with a logic-based multi-LLM voice router for Home Assistant. That earlier project proved the routing problem: keep native Home Assistant intents local, classify the requests that remain, choose the right LLM tier, and then call Home Assistant again so the selected conversation agent retains its own tools, entity exposure and permissions.
 
-That still matters, but it is no longer the whole application.
+**That router remains a separate service and repository. Jarvis Core does not replace or absorb it.** The router owns reactive LOCAL / DESKTOP / CLOUD conversation routing; LiteLLM remains the model/API gateway; Home Assistant remains the conversation/tool authority.
 
-**Jarvis Core is now the context, capability and proactive intelligence layer behind Jarvis.** It consumes facts from systems that already own them, turns those facts into bounded evidence, identifies situations worth considering, and only then uses an LLM where judgement genuinely adds value.
+**Jarvis Core is a separate application/service that sits alongside and builds on that foundation. It is the context, capability and proactive intelligence layer behind the wider Jarvis platform.**
+ It consumes facts from systems that already own them, turns those facts into bounded evidence, identifies situations worth considering, and only then uses an LLM where judgement genuinely adds value.
 
 The design principle I have kept coming back to is simple:
 
@@ -247,8 +248,19 @@ The roadmap is in [docs/roadmap.md](docs/roadmap.md).
 
 ---
 
-## 10. Where V1 still fits
+## 10. Where the original voice router still fits
 
-V1's lessons have not been thrown away. LiteLLM is still a model gateway, not the semantic brain. Home Assistant remains the authority for its tools and entities. Cheap deterministic handling should happen before expensive probabilistic handling. Boundaries should be proven independently before they are composed.
+The original multi-LLM router is still an active architectural layer, not legacy code that Jarvis Core has swallowed.
 
-What changed is the scope of Jarvis itself. V1 answered **“which model should answer this request?”**. Jarvis Core now also asks **“what do I know, what is actually possible, is this situation meaningful, and should I say anything at all?”**
+For an inbound voice request, Home Assistant native intents still get the first opportunity to handle the request. Requests that need semantic routing can then pass to `jarvis-route`, which chooses LOCAL / DESKTOP / CLOUD and hands the request back to the appropriate Home Assistant conversation agent. LiteLLM remains a model/API gateway rather than the semantic router.
+
+Jarvis Core sits alongside that reactive path. It owns context, bounded capabilities and proactive intelligence: **“what do I know, what is actually possible, is this situation meaningful, and should I say anything at all?”**
+
+The two repositories therefore document two cooperating services in the wider Jarvis platform:
+
+- **[HA Multi-layered LLM Voice Assistant](https://github.com/steverhysjenks/HA-multilayered-LLM-Voice-Assistant-intent-local-cloud-)** — the reactive Home Assistant voice-routing layer, including `jarvis-route`, LOCAL / DESKTOP / CLOUD model selection, LiteLLM integration and downstream Home Assistant conversation agents.
+- **Jarvis Core (this repository)** — the context, capability and proactive-intelligence layer, including Observer, behaviour, Music Assistant capabilities, judgement, action policy, delivery/replay and Jarvis-owned lifecycle.
+
+The architectural principles remain shared: Home Assistant retains authority for its tools and entities; deterministic handling should happen before probabilistic handling; and boundaries should be proven independently before they are composed.
+
+In other words, Jarvis Core extends the wider Jarvis platform; it does not replace the voice router.
