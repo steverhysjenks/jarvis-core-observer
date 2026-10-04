@@ -1,0 +1,13 @@
+65:@app.get("/")
+75:@app.get("/health")
+86:@app.get("/context/home")
+97:@app.get("/context/user")
+108:@app.get("/context/calendar")
+126:@app.get("/context/history")
+144:@app.get("/context/observer")
+155:@app.get("/observer/status")
+160:@app.get("/observer/announcements")
+183:@app.get("/api/notifications")
+204:@app.get(
+220:@app.post("/voice/repeat-last")
+244:@app.post("/request")
