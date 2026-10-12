@@ -1,0 +1,7 @@
+# Install in a dedicated test environment alongside unchanged requirements.txt.
+pytest>=8.3,<9
+pytest-asyncio>=0.25,<1
+# Provides Europe/London timezone data on Windows.
+tzdata>=2024.1
+# CI configuration validation (test tooling only).
+PyYAML>=6,<7

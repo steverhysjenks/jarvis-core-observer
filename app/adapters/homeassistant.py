@@ -140,16 +140,14 @@ class HomeAssistantClient:
         self,
         entity_id: str,
         start: datetime,
-        end: datetime | None = None,
+        end: datetime,
     ) -> list[dict]:
         params = {
             "filter_entity_id": entity_id,
             "minimal_response": "",
             "no_attributes": "",
+            "end_time": end.isoformat(),
         }
-
-        if end is not None:
-            params["end_time"] = end.isoformat()
 
         response = await self._get(
             f"/api/history/period/{start.isoformat()}",

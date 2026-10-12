@@ -2,6 +2,7 @@ import asyncio
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+from app.context.availability import build_availability_context
 from app.context.calendar import build_calendar_context
 from app.context.family import build_family_context
 from app.context.history import build_history_context
@@ -40,6 +41,7 @@ async def build_observer_context() -> dict:
         user,
         family,
         calendar,
+        availability,
         history,
         waste,
     ) = await asyncio.gather(
@@ -47,6 +49,7 @@ async def build_observer_context() -> dict:
         build_user_context(),
         build_family_context(),
         build_calendar_context(days=7),
+        build_availability_context(),
         build_history_context(
             hours=OBSERVER_HISTORY_HOURS
         ),
@@ -88,6 +91,7 @@ async def build_observer_context() -> dict:
             ),
             "today_all_day": today_context,
             "events": calendar["events"],
+            "work": availability["work"],
         },
         "household": {
             "family": family,
@@ -105,6 +109,15 @@ async def build_observer_context() -> dict:
         "capabilities": {
             **user["capabilities"],
             "calendar": True,
+            "workday_context": availability[
+                "capabilities"
+            ]["workday_context"],
+            "leave_context": availability[
+                "capabilities"
+            ]["leave_context"],
+            "work_availability": availability[
+                "capabilities"
+            ]["work_availability"],
             "waste_schedule": (
                 waste["next_collection"]
                 is not None

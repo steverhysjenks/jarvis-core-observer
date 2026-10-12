@@ -1,0 +1,344 @@
+{
+  "normalisation": "CRLF to LF; no other content changes",
+  "baseline_version": "0.7.0",
+  "differences": [],
+  "application_files": 67,
+  "algorithm": "SHA-256",
+  "files": [
+    {
+      "production_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "git_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "app/adapters/__init__.py"
+    },
+    {
+      "production_sha256": "c09373e058d12e3a02e824ec1eee5f167f5ba1615ffa6d38b901ad6351a65e51",
+      "git_sha256": "c09373e058d12e3a02e824ec1eee5f167f5ba1615ffa6d38b901ad6351a65e51",
+      "path": "app/adapters/homeassistant.py"
+    },
+    {
+      "production_sha256": "43369a3534fca5ca20660041056d1676aaf4e40f8435fe5448ca6134e800b710",
+      "git_sha256": "43369a3534fca5ca20660041056d1676aaf4e40f8435fe5448ca6134e800b710",
+      "path": "app/adapters/music_assistant_native.py"
+    },
+    {
+      "production_sha256": "0c0a1bbd6a4eec524e59ab76082f8e6f641aa8928e6c25745144cbface07bf56",
+      "git_sha256": "0c0a1bbd6a4eec524e59ab76082f8e6f641aa8928e6c25745144cbface07bf56",
+      "path": "app/adapters/music_assistant.py"
+    },
+    {
+      "production_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "git_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "app/behaviour/__init__.py"
+    },
+    {
+      "production_sha256": "1abf9fba60091fa1e9899fce6170bc184248ee4530ddd2d598d3f1a1d22eca65",
+      "git_sha256": "1abf9fba60091fa1e9899fce6170bc184248ee4530ddd2d598d3f1a1d22eca65",
+      "path": "app/behaviour/activity.py"
+    },
+    {
+      "production_sha256": "1598d60245250c5b39b77d066ebafbfa0b26067e91dbe3db814656b67fa93c49",
+      "git_sha256": "1598d60245250c5b39b77d066ebafbfa0b26067e91dbe3db814656b67fa93c49",
+      "path": "app/behaviour/departures.py"
+    },
+    {
+      "production_sha256": "9f37002ba73f504caaae0fcd1bcdcf6c34f012d241f24bf31a441a3d5a9223fb",
+      "git_sha256": "9f37002ba73f504caaae0fcd1bcdcf6c34f012d241f24bf31a441a3d5a9223fb",
+      "path": "app/behaviour/routines.py"
+    },
+    {
+      "production_sha256": "048c0a552165291935279801b260198a6f993ec62cc96637cf65dd37783a4528",
+      "git_sha256": "048c0a552165291935279801b260198a6f993ec62cc96637cf65dd37783a4528",
+      "path": "app/behaviour/visits.py"
+    },
+    {
+      "production_sha256": "641cf23f4d2819609a76d8253d07e0c16f8d359760f622c35e3996d70fc694d7",
+      "git_sha256": "641cf23f4d2819609a76d8253d07e0c16f8d359760f622c35e3996d70fc694d7",
+      "path": "app/capabilities/__init__.py"
+    },
+    {
+      "production_sha256": "abe1f36a103d8cf1a0d4a8ecff56c787fe85f1154fe9acae9ae54f0b9870705f",
+      "git_sha256": "abe1f36a103d8cf1a0d4a8ecff56c787fe85f1154fe9acae9ae54f0b9870705f",
+      "path": "app/capabilities/base.py"
+    },
+    {
+      "production_sha256": "d94972f9811e4c5f3ec9ec59691bd28ab6ec84c9564d2f43604504545ee8a577",
+      "git_sha256": "d94972f9811e4c5f3ec9ec59691bd28ab6ec84c9564d2f43604504545ee8a577",
+      "path": "app/capabilities/dispatcher.py"
+    },
+    {
+      "production_sha256": "c2d5963a3ec8634f76b0fe81bcba3ebb94cbb5efc515101d80f4f0d3c4a9e5a0",
+      "git_sha256": "c2d5963a3ec8634f76b0fe81bcba3ebb94cbb5efc515101d80f4f0d3c4a9e5a0",
+      "path": "app/capabilities/models.py"
+    },
+    {
+      "production_sha256": "15f7056b7762b1e76ea361a839ab17ee1461b996b250bac493f4e26e71ea7fde",
+      "git_sha256": "15f7056b7762b1e76ea361a839ab17ee1461b996b250bac493f4e26e71ea7fde",
+      "path": "app/capabilities/music.py"
+    },
+    {
+      "production_sha256": "880ba360b367e5f83d7f825ef9c0b1423d5d50ad21d3f7ae3d0b890ca1ecd346",
+      "git_sha256": "880ba360b367e5f83d7f825ef9c0b1423d5d50ad21d3f7ae3d0b890ca1ecd346",
+      "path": "app/capabilities/replay.py"
+    },
+    {
+      "production_sha256": "455bc30a35cec6cb3287ce709b9f570ce6ab1c0ba47bc30cc47629168aaa4ec0",
+      "git_sha256": "455bc30a35cec6cb3287ce709b9f570ce6ab1c0ba47bc30cc47629168aaa4ec0",
+      "path": "app/config.py"
+    },
+    {
+      "production_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "git_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "app/context/__init__.py"
+    },
+    {
+      "production_sha256": "e26563fe0ca4e3d9fa68865502e902a95b1ca2f76a1150be8de665e56a9d4f0a",
+      "git_sha256": "e26563fe0ca4e3d9fa68865502e902a95b1ca2f76a1150be8de665e56a9d4f0a",
+      "path": "app/context/activity.py"
+    },
+    {
+      "production_sha256": "3774eddaa185b22fa57cce71218ab8704cc27be84ad340cb55ef9a6e0cca3514",
+      "git_sha256": "3774eddaa185b22fa57cce71218ab8704cc27be84ad340cb55ef9a6e0cca3514",
+      "path": "app/context/areas.py"
+    },
+    {
+      "production_sha256": "7a10798565d3a1238109b76b67303e9d792531e8933d49c860b1a9851bd994f0",
+      "git_sha256": "7a10798565d3a1238109b76b67303e9d792531e8933d49c860b1a9851bd994f0",
+      "path": "app/context/availability.py"
+    },
+    {
+      "production_sha256": "3f35639bdbdd1d78898c87d1a25c98f6c622ec2ad678b4ed5812deba17ddc595",
+      "git_sha256": "3f35639bdbdd1d78898c87d1a25c98f6c622ec2ad678b4ed5812deba17ddc595",
+      "path": "app/context/calendar.py"
+    },
+    {
+      "production_sha256": "8ebb2afa96572763d607c3cd0036411836eacc4b77e8bb827629ec8f86339b12",
+      "git_sha256": "8ebb2afa96572763d607c3cd0036411836eacc4b77e8bb827629ec8f86339b12",
+      "path": "app/context/evidence.py"
+    },
+    {
+      "production_sha256": "44d83ebc8a3e47a9d78e8bc2eb3a0a649ab338e05fe0e47934c32ba37fb18646",
+      "git_sha256": "44d83ebc8a3e47a9d78e8bc2eb3a0a649ab338e05fe0e47934c32ba37fb18646",
+      "path": "app/context/family.py"
+    },
+    {
+      "production_sha256": "93506edd5e0caf4c49905c4addfec7d807e7f042882d7a3f8784832315f20f07",
+      "git_sha256": "93506edd5e0caf4c49905c4addfec7d807e7f042882d7a3f8784832315f20f07",
+      "path": "app/context/history.py"
+    },
+    {
+      "production_sha256": "616086442f815169d6b13c384e95c7fcb28712f3cea58217cdf8df2a6ff7cffe",
+      "git_sha256": "616086442f815169d6b13c384e95c7fcb28712f3cea58217cdf8df2a6ff7cffe",
+      "path": "app/context/home.py"
+    },
+    {
+      "production_sha256": "60b48ceeaae368486ebc7eec731201bb8537291e1799f56456cb2e39b41f9dc3",
+      "git_sha256": "60b48ceeaae368486ebc7eec731201bb8537291e1799f56456cb2e39b41f9dc3",
+      "path": "app/context/places.py"
+    },
+    {
+      "production_sha256": "0cb8e6441d0fb45dc6d11936f42788948567fc26569d78f44838fd0b83f3c2c8",
+      "git_sha256": "0cb8e6441d0fb45dc6d11936f42788948567fc26569d78f44838fd0b83f3c2c8",
+      "path": "app/context/user.py"
+    },
+    {
+      "production_sha256": "b452e05fbe7749ea02445112b2c63a6324c242324cc48d5a2017a547b3b350b6",
+      "git_sha256": "b452e05fbe7749ea02445112b2c63a6324c242324cc48d5a2017a547b3b350b6",
+      "path": "app/context/waste.py"
+    },
+    {
+      "production_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "git_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "app/judgement/__init__.py"
+    },
+    {
+      "production_sha256": "49c807a3aedc2aff48f9f34c02b9e4670b6f66cca9fc81fc9f077d4034d6e28a",
+      "git_sha256": "49c807a3aedc2aff48f9f34c02b9e4670b6f66cca9fc81fc9f077d4034d6e28a",
+      "path": "app/judgement/ollama.py"
+    },
+    {
+      "production_sha256": "4515a9f751f51e998328c0a47218c4dd39f8bc10079f165239d2d943b987e19a",
+      "git_sha256": "4515a9f751f51e998328c0a47218c4dd39f8bc10079f165239d2d943b987e19a",
+      "path": "app/judgement/qwen.py"
+    },
+    {
+      "production_sha256": "5babc017a27cde5dc4ebe371698d4e9509a024eb3f3c93e9d891c3268bacc966",
+      "git_sha256": "5babc017a27cde5dc4ebe371698d4e9509a024eb3f3c93e9d891c3268bacc966",
+      "path": "app/main.py"
+    },
+    {
+      "production_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "git_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "app/music/__init__.py"
+    },
+    {
+      "production_sha256": "7ddd6d1d2c0b6c6753ecc151c25e8e4a9d974a1a80c0da9cfdaefad76499c87c",
+      "git_sha256": "7ddd6d1d2c0b6c6753ecc151c25e8e4a9d974a1a80c0da9cfdaefad76499c87c",
+      "path": "app/music/control.py"
+    },
+    {
+      "production_sha256": "c7b57820af546feb6be8d9f8070bdd2df1b8332a275996e3be3fc602a96aa2d2",
+      "git_sha256": "c7b57820af546feb6be8d9f8070bdd2df1b8332a275996e3be3fc602a96aa2d2",
+      "path": "app/music/intents.py"
+    },
+    {
+      "production_sha256": "61e870550bdd5f7ef7d2aab7a2233aa2c3af0e36df4d69475716626f5de82f1a",
+      "git_sha256": "61e870550bdd5f7ef7d2aab7a2233aa2c3af0e36df4d69475716626f5de82f1a",
+      "path": "app/music/models.py"
+    },
+    {
+      "production_sha256": "0a164ce33c4cd7680fc0e57f94d8a7da2845f924a55b81187c5141cf507713f5",
+      "git_sha256": "0a164ce33c4cd7680fc0e57f94d8a7da2845f924a55b81187c5141cf507713f5",
+      "path": "app/music/policy.py"
+    },
+    {
+      "production_sha256": "f0bc6f50b25d3f0691d4a3ad3706aba060c9d9dfde58ad138c61d41f77354431",
+      "git_sha256": "f0bc6f50b25d3f0691d4a3ad3706aba060c9d9dfde58ad138c61d41f77354431",
+      "path": "app/music/retrieval.py"
+    },
+    {
+      "production_sha256": "9a9587cdca730a41f1c35569f8addc32316bdf2df28b78c8141564484647efcc",
+      "git_sha256": "9a9587cdca730a41f1c35569f8addc32316bdf2df28b78c8141564484647efcc",
+      "path": "app/music/semantic_policy.py"
+    },
+    {
+      "production_sha256": "421c6fae3533e8e192c73cc58e49ed4986263e8aa19eb1ed3cd88a9c5565e3ff",
+      "git_sha256": "421c6fae3533e8e192c73cc58e49ed4986263e8aa19eb1ed3cd88a9c5565e3ff",
+      "path": "app/music/semantic.py"
+    },
+    {
+      "production_sha256": "6147db3f52e27f1f82b93c5f56b6e75ecaee3e9747f99406eceb1b186d97ef47",
+      "git_sha256": "6147db3f52e27f1f82b93c5f56b6e75ecaee3e9747f99406eceb1b186d97ef47",
+      "path": "app/music/service.py"
+    },
+    {
+      "production_sha256": "b186eaf89c53c23ffab148b81c0509b5eda3e404c155c1a38bd8d9305a2fe076",
+      "git_sha256": "b186eaf89c53c23ffab148b81c0509b5eda3e404c155c1a38bd8d9305a2fe076",
+      "path": "app/music/targets.py"
+    },
+    {
+      "production_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "git_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "app/observer/__init__.py"
+    },
+    {
+      "production_sha256": "3e227fac99ae8f014759ae932a2737bea4da4488ce99d20514d8cea9c561f427",
+      "git_sha256": "3e227fac99ae8f014759ae932a2737bea4da4488ce99d20514d8cea9c561f427",
+      "path": "app/observer/action_executor.py"
+    },
+    {
+      "production_sha256": "bfe236cf7bd9df583f7a3b03d582bb6249140e7493494e831fc2052d47c23190",
+      "git_sha256": "bfe236cf7bd9df583f7a3b03d582bb6249140e7493494e831fc2052d47c23190",
+      "path": "app/observer/action_policy.py"
+    },
+    {
+      "production_sha256": "90b190230b45ad2a2031ea1e2733e8d48a421d5dc9b41574e7e4b9f83eb8f8cf",
+      "git_sha256": "90b190230b45ad2a2031ea1e2733e8d48a421d5dc9b41574e7e4b9f83eb8f8cf",
+      "path": "app/observer/announcements.py"
+    },
+    {
+      "production_sha256": "f963046fd6125c1db0f7c614716946f0a50fb1d905e672a2a904e9093dad27a4",
+      "git_sha256": "f963046fd6125c1db0f7c614716946f0a50fb1d905e672a2a904e9093dad27a4",
+      "path": "app/observer/context.py"
+    },
+    {
+      "production_sha256": "41905a1b2858cedda2b7183705dabbc977e0052c2de8d6babfd779b87bb327f7",
+      "git_sha256": "41905a1b2858cedda2b7183705dabbc977e0052c2de8d6babfd779b87bb327f7",
+      "path": "app/observer/detectors/__init__.py"
+    },
+    {
+      "production_sha256": "894673cda766e5e325f8d757d2fa9b2815e90b8fbdfcef6b3e9b61534f05ce8d",
+      "git_sha256": "894673cda766e5e325f8d757d2fa9b2815e90b8fbdfcef6b3e9b61534f05ce8d",
+      "path": "app/observer/detectors/activity.py"
+    },
+    {
+      "production_sha256": "21f44dca93f4347fa83136a89be86750779f719f3e1fc9b6e60e3fba9112405c",
+      "git_sha256": "21f44dca93f4347fa83136a89be86750779f719f3e1fc9b6e60e3fba9112405c",
+      "path": "app/observer/detectors/departure.py"
+    },
+    {
+      "production_sha256": "a3ce8e6788865ea0e8a1d0fa8233d50dc4ca0be8cf6aebf6c127905c784821e0",
+      "git_sha256": "a3ce8e6788865ea0e8a1d0fa8233d50dc4ca0be8cf6aebf6c127905c784821e0",
+      "path": "app/observer/detectors/routine_departure.py"
+    },
+    {
+      "production_sha256": "8bda5cebe498674eeaa864e17b36a531bba28e175926347341704bdbcdc224bc",
+      "git_sha256": "8bda5cebe498674eeaa864e17b36a531bba28e175926347341704bdbcdc224bc",
+      "path": "app/observer/detectors/waste.py"
+    },
+    {
+      "production_sha256": "9edf9559695f48ed7f51a463d168e3845af3f7dbf1abd20fef96fce96cc91ea2",
+      "git_sha256": "9edf9559695f48ed7f51a463d168e3845af3f7dbf1abd20fef96fce96cc91ea2",
+      "path": "app/observer/enrichment.py"
+    },
+    {
+      "production_sha256": "82ed9406da74913f1f4b57c6b79119e96d5eb994d8622483eaaaff4c66a8b72a",
+      "git_sha256": "82ed9406da74913f1f4b57c6b79119e96d5eb994d8622483eaaaff4c66a8b72a",
+      "path": "app/observer/evaluator.py"
+    },
+    {
+      "production_sha256": "ffc6704b498e9261fc491c96ad9998184c9fd81b205bd13789c459995a699c44",
+      "git_sha256": "ffc6704b498e9261fc491c96ad9998184c9fd81b205bd13789c459995a699c44",
+      "path": "app/observer/resolver.py"
+    },
+    {
+      "production_sha256": "e7ed0abc44ee4d28af5d0f7350c569f442b50d33a0dadb9c1b20d8c295b65e2c",
+      "git_sha256": "e7ed0abc44ee4d28af5d0f7350c569f442b50d33a0dadb9c1b20d8c295b65e2c",
+      "path": "app/observer/runner.py"
+    },
+    {
+      "production_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "git_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "app/storage/__init__.py"
+    },
+    {
+      "production_sha256": "4106c7e3cdd1625e1bdc3e32de51e14ceacf3fdf21fa2c9df53dc537b7a9008e",
+      "git_sha256": "4106c7e3cdd1625e1bdc3e32de51e14ceacf3fdf21fa2c9df53dc537b7a9008e",
+      "path": "app/storage/deliveries.py"
+    },
+    {
+      "production_sha256": "32efab9b9e12e9c7c236d833a81a2f49fa9ace759e8d49a352160429b2712812",
+      "git_sha256": "32efab9b9e12e9c7c236d833a81a2f49fa9ace759e8d49a352160429b2712812",
+      "path": "app/storage/ledger.py"
+    },
+    {
+      "production_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "git_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "app/voice/__init__.py"
+    },
+    {
+      "production_sha256": "387b56346d71fc8f738e1a2169b6bba78b6b636149302c264e20829a9ebf0553",
+      "git_sha256": "387b56346d71fc8f738e1a2169b6bba78b6b636149302c264e20829a9ebf0553",
+      "path": "app/voice/announcements.py"
+    },
+    {
+      "production_sha256": "30c30d0488ae1f01c3afacd94c8127d0362d8f8f8878b15f2469a4a90fa712f6",
+      "git_sha256": "30c30d0488ae1f01c3afacd94c8127d0362d8f8f8878b15f2469a4a90fa712f6",
+      "path": "app/voice/orchestrator.py"
+    },
+    {
+      "production_sha256": "6e1bd057aaf2de6697aff17a61c6c3adccf49de9ffd956473013efc27a2d1579",
+      "git_sha256": "6e1bd057aaf2de6697aff17a61c6c3adccf49de9ffd956473013efc27a2d1579",
+      "path": "app/voice/replay.py"
+    },
+    {
+      "production_sha256": "5829407e1b2beae49251a76430508ba5fb9c9375466e842fb9c44b5f1d25f573",
+      "git_sha256": "5829407e1b2beae49251a76430508ba5fb9c9375466e842fb9c44b5f1d25f573",
+      "path": "app/voice/requests.py"
+    },
+    {
+      "production_sha256": "46cc49ec5fdb35e6bc2335c96089e9a8c782fa1ccebb098607507b875def8fa9",
+      "git_sha256": "46cc49ec5fdb35e6bc2335c96089e9a8c782fa1ccebb098607507b875def8fa9",
+      "path": "app/voice/routing.py"
+    },
+    {
+      "production_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "git_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "app/web/__init__.py"
+    },
+    {
+      "production_sha256": "e62845eaf34e55642056137ea2ffa14dfafaba0279d003895221053f826d5084",
+      "git_sha256": "e62845eaf34e55642056137ea2ffa14dfafaba0279d003895221053f826d5084",
+      "path": "app/web/notifications.py"
+    }
+  ]
+}

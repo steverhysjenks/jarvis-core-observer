@@ -3,6 +3,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app.adapters.homeassistant import ha_client
+from app.context.places import resolve_semantic_place
 
 
 LOCAL_TIMEZONE = ZoneInfo("Europe/London")
@@ -109,6 +110,20 @@ async def build_user_context() -> dict:
 
     presence_available = person_state is not None
 
+    place = (
+        await resolve_semantic_place(
+            person_state
+        )
+        if presence_available
+        else {
+            "available": False,
+            "id": None,
+            "name": None,
+            "zone": None,
+            "reason": "presence_unavailable",
+        }
+    )
+
     room_location_available = (
         home
         and tracker_state is not None
@@ -141,13 +156,23 @@ async def build_user_context() -> dict:
         "generated_at": now.isoformat(),
         "home": home if presence_available else None,
         "location": {
+            "place": {
+                "id": place.get("id"),
+                "name": place.get("name"),
+                "zone": place.get("zone"),
+                "source": place.get("source"),
+            },
             "area": area_state,
             "floor": floor_state,
             "distance_m": distance_m,
             "source": (
                 "bermuda"
                 if room_location_available
-                else None
+                else (
+                    "home_assistant_zone"
+                    if place.get("available")
+                    else None
+                )
             ),
             "stable": (
                 area_stable
@@ -166,6 +191,7 @@ async def build_user_context() -> dict:
         },
         "capabilities": {
             "presence": presence_available,
+            "place": place.get("available", False),
             "room_location": room_location_available,
         },
         "evidence": {

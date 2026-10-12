@@ -12,6 +12,8 @@ from app.adapters.homeassistant import HomeAssistantError
 from app.context.calendar import build_calendar_context
 from app.context.history import build_history_context
 from app.context.home import build_home_context
+from app.context.places import discover_places
+from app.context.availability import build_availability_context
 from app.context.user import build_user_context
 from app.observer.announcements import get_shadow_announcements
 from app.observer.context import build_observer_snapshot
@@ -57,7 +59,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Jarvis Core",
     description="Context and proactive intelligence layer for Jarvis",
-    version="1.1.0",
+    version="0.7.0",
     lifespan=lifespan,
 )
 
@@ -67,7 +69,7 @@ async def root():
     return {
         "service": "Jarvis Core",
         "status": "online",
-        "version": "1.1.0",
+        "version": "0.7.0",
         "docs": "/docs",
     }
 
@@ -77,7 +79,7 @@ async def health():
     return {
         "status": "healthy",
         "service": "jarvis-core",
-        "version": "1.1.0",
+        "version": "0.7.0",
         "timestamp": datetime.now(LOCAL_TIMEZONE).isoformat(),
         "timezone": "Europe/London",
     }
@@ -92,6 +94,27 @@ async def home_context():
             status_code=503,
             detail=str(exc),
         ) from exc
+
+
+
+
+@app.get("/context/availability")
+async def context_availability():
+    return await build_availability_context()
+
+@app.get("/context/places")
+async def places_context(
+    refresh: bool = Query(
+        default=False,
+        description=(
+            "Force refresh of Home Assistant "
+            "zone discovery."
+        ),
+    ),
+):
+    return await discover_places(
+        force_refresh=refresh
+    )
 
 
 @app.get("/context/user")
