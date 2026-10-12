@@ -104,6 +104,26 @@ Be conservative about interruption, but do not avoid interruption when
 the supplied evidence indicates the user may benefit from timely action.
 
 Treat supplied facts as authoritative.
+
+Work context semantics:
+- work_calendar_status describes availability to the user's work,
+  not the user's general personal availability;
+- "busy" is evidence that a low-priority interruption may be
+  inappropriate at that moment;
+- "tentative" is weaker evidence of a possible work commitment;
+- "free" means there is no known work-calendar commitment, but it
+  does not prove the user is generally available;
+- "away" means unavailable to work. It does not mean the user is
+  physically away, personally unavailable, or should not be
+  interrupted;
+- work_on_leave means normal work expectations are suspended;
+- work_expectation describes whether normal work expectations apply
+  for the day. It does not prove the user is currently working.
+
+Use work context as one piece of evidence when judging whether the
+specific candidate justifies interruption. Do not make work-calendar
+status the sole basis for an interruption decision.
+
 Do not recalculate times or contradict supplied facts.
 Do not invent intentions, routines, people, events, destinations,
 causes, household rules, or capabilities.
@@ -147,6 +167,21 @@ For ignore or monitor, message must be null.
 def build_judgement_context(
     observer: dict,
 ) -> dict:
+    """
+    Build a bounded, decision-relevant context for the
+    judgement model.
+
+    Observer context may be intentionally rich. The local
+    judgement model should receive only the semantic state
+    needed to decide whether this candidate warrants
+    interruption.
+    """
+
+    schedule = observer.get(
+        "schedule",
+        {},
+    )
+
     return {
         "local_time": observer.get(
             "local_time"
@@ -157,9 +192,20 @@ def build_judgement_context(
         "environment": observer.get(
             "environment"
         ),
-        "schedule": observer.get(
-            "schedule"
-        ),
+        "schedule": {
+            "happening_now": schedule.get(
+                "happening_now"
+            ),
+            "next_timed_event": schedule.get(
+                "next_timed_event"
+            ),
+            "today_all_day": schedule.get(
+                "today_all_day"
+            ),
+            "work": schedule.get(
+                "work"
+            ),
+        },
         "recent_activity": observer.get(
             "recent_activity"
         ),

@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from app.adapters.homeassistant import ha_client
+from app.context.places import discover_places
 
 
 LOCAL_TIMEZONE = ZoneInfo("Europe/London")
@@ -92,6 +93,219 @@ def normalise_user_history(
     return events
 
 
+def build_zone_place_map(
+    registry: dict,
+) -> dict[str, dict]:
+    """
+    Build a lookup from raw HA zone ID to semantic place.
+    """
+
+    mapping = {}
+
+    for place in registry.get("places", []):
+        place_value = {
+            "id": place["id"],
+            "name": place["name"],
+            "source": place["source"],
+        }
+
+        for zone in place.get("zones", []):
+            mapping[zone.casefold()] = (
+                place_value
+            )
+
+        for state_name in place.get(
+            "state_names",
+            [],
+        ):
+            mapping[
+                state_name.casefold()
+            ] = place_value
+
+    return mapping
+
+
+def derive_place_visits(
+    history: list[dict],
+    registry: dict,
+    window_end: datetime,
+) -> list[dict]:
+    """
+    Derive continuous semantic place visits from HA person history.
+
+    Multiple HA zones that map to the same semantic place are
+    treated as one continuous visit.
+
+    Raw person history remains available separately.
+    """
+
+    if not history:
+        return []
+
+    zone_map = build_zone_place_map(
+        registry
+    )
+
+    visits = []
+
+    current_place = None
+    current_zone = None
+    arrived_at = None
+    arrival_observed = False
+
+    def semantic_place(
+        state: str | None,
+    ) -> dict | None:
+        if (
+            state is None
+            or state in (
+                "not_home",
+                "unknown",
+                "unavailable",
+            )
+        ):
+            return None
+
+        return zone_map.get(
+            state.casefold()
+        )
+
+    def close_visit(
+        departed_at: datetime,
+    ) -> None:
+        nonlocal current_place
+        nonlocal current_zone
+        nonlocal arrived_at
+        nonlocal arrival_observed
+
+        if (
+            current_place is None
+            or arrived_at is None
+        ):
+            return
+
+        duration_seconds = max(
+            0.0,
+            (
+                departed_at - arrived_at
+            ).total_seconds(),
+        )
+
+        visits.append(
+            {
+                "place": {
+                    "id": current_place["id"],
+                    "name": current_place["name"],
+                    "source": current_place["source"],
+                },
+                "arrival": arrived_at.isoformat(),
+                "arrival_observed": arrival_observed,
+                "departure": departed_at.isoformat(),
+                "departure_observed": True,
+                "duration_seconds": round(
+                    duration_seconds,
+                    1,
+                ),
+                "duration_minutes": round(
+                    duration_seconds / 60,
+                    1,
+                ),
+                "initial_zone": current_zone,
+            }
+        )
+
+        current_place = None
+        current_zone = None
+        arrived_at = None
+        arrival_observed = False
+
+    for index, item in enumerate(history):
+        state = item.get("state")
+
+        if state in (
+            None,
+            "unknown",
+            "unavailable",
+        ):
+            continue
+
+        changed_at_raw = item.get(
+            "last_changed"
+        )
+
+        if not changed_at_raw:
+            continue
+
+        changed_at = (
+            datetime.fromisoformat(
+                changed_at_raw
+            )
+            .astimezone(LOCAL_TIMEZONE)
+        )
+
+        place = semantic_place(state)
+
+        if place is None:
+            close_visit(changed_at)
+            continue
+
+        if current_place is None:
+            current_place = place
+            current_zone = state
+            arrived_at = changed_at
+            arrival_observed = index != 0
+            continue
+
+        if place["id"] == current_place["id"]:
+            # A raw zone transition inside the same semantic
+            # place does not end the visit.
+            continue
+
+        close_visit(changed_at)
+
+        current_place = place
+        current_zone = state
+        arrived_at = changed_at
+        arrival_observed = True
+
+    if (
+        current_place is not None
+        and arrived_at is not None
+    ):
+        duration_seconds = max(
+            0.0,
+            (
+                window_end - arrived_at
+            ).total_seconds(),
+        )
+
+        visits.append(
+            {
+                "place": {
+                    "id": current_place["id"],
+                    "name": current_place["name"],
+                    "source": current_place["source"],
+                },
+                "arrival": arrived_at.isoformat(),
+                "arrival_observed": arrival_observed,
+                "departure": None,
+                "departure_observed": False,
+                "duration_seconds": round(
+                    duration_seconds,
+                    1,
+                ),
+                "duration_minutes": round(
+                    duration_seconds / 60,
+                    1,
+                ),
+                "initial_zone": current_zone,
+                "current": True,
+            }
+        )
+
+    return visits
+
+
 async def build_history_context(
     hours: int = 24,
 ) -> dict:
@@ -102,10 +316,12 @@ async def build_history_context(
         ha_client.get_history(
             PRIMARY_ENTRANCE_ENTITY,
             start,
+            now,
         ),
         ha_client.get_history(
             PRIMARY_USER_ENTITY,
             start,
+            now,
         ),
     )
 
@@ -115,6 +331,14 @@ async def build_history_context(
 
     user_events = normalise_user_history(
         user_history
+    )
+
+    place_registry = await discover_places()
+
+    place_visits = derive_place_visits(
+        user_history,
+        place_registry,
+        now,
     )
 
     timeline = entrance_events + user_events
@@ -128,9 +352,11 @@ async def build_history_context(
             "end": now.isoformat(),
         },
         "timeline": timeline,
+        "place_visits": place_visits,
         "summary": {
             "entrance_events": len(entrance_events),
             "user_events": len(user_events),
+            "place_visits": len(place_visits),
             "total_events": len(timeline),
         },
         "capabilities": {

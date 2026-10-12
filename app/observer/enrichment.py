@@ -39,12 +39,47 @@ def enrich_candidate(
         {},
     )
 
+    work = schedule.get(
+        "work",
+        {},
+    )
+
     facts["user_currently_home"] = (
         user.get("home") is True
     )
 
     facts["user_area"] = user.get(
         "area"
+    )
+
+    facts[
+        "work_normal_working_day"
+    ] = work.get(
+        "normal_working_day"
+    )
+
+    facts[
+        "work_ha_workday"
+    ] = work.get(
+        "ha_workday"
+    )
+
+    facts[
+        "work_on_leave"
+    ] = work.get(
+        "on_leave"
+    )
+
+    facts[
+        "work_expectation"
+    ] = work.get(
+        "expectation"
+    )
+
+    facts[
+        "work_calendar_status"
+    ] = work.get(
+        "calendar_status"
     )
 
     if (

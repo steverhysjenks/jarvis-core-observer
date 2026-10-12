@@ -1,0 +1,33 @@
+# CI only. Network remains available to the Docker container for dependency installation.
+stages:
+  - validate
+  - test
+
+default:
+  image: python:3.13-slim
+  tags:
+    - docker
+  before_script:
+    - python --version
+    - python -m pip install --disable-pip-version-check -r requirements.txt -r requirements-test.txt
+    - python -m pip check
+
+validate:
+  stage: validate
+  timeout: 10m
+  script:
+    - python -B ci/validate.py --ci
+
+regression:
+  stage: test
+  timeout: 10m
+  script:
+    - python -B ci/validate.py --ci
+    - python -B ci/run_offline.py
+  artifacts:
+    when: always
+    expire_in: 7 days
+    paths:
+      - results/*.xml
+    reports:
+      junit: results/*.xml
