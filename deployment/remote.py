@@ -7,6 +7,7 @@ import errno
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -33,6 +34,43 @@ def runtime_identity():
     return pwd.getpwnam("jarvis").pw_uid, grp.getgrnam("jarvis").gr_gid
 
 
+class StartupPending(RuntimeError):
+    """A narrowly retryable startup observation; never a successful verification."""
+    def __init__(self, message, snapshot=None):
+        super().__init__(message)
+        self.snapshot = snapshot or {}
+
+
+def startup_budget(deadline, maximum):
+    if deadline is None:
+        return maximum
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise StartupPending("Startup inspection deadline exhausted")
+    return min(maximum, remaining)
+
+
+def service_state(*, deadline=None):
+    value = run("systemctl", "show", SERVICE, "--property=User", "--property=Group",
+                "--property=ActiveState", "--property=SubState", timeout=startup_budget(deadline, 5), capture=True)
+    return dict(line.split("=", 1) for line in value.splitlines() if "=" in line)
+
+
+def startup_cwd(pid):
+    # Diagnostics only: never run the jarvis fallback for an unverified identity.
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except OSError as error:
+        return f"<unavailable: {type(error).__name__}>"
+
+
+def transitional_identity(uids, gids, uid, gid):
+    return (len(uids) == 4 and len(gids) == 4
+            and all(value in {0, uid} for value in uids)
+            and all(value in {0, gid} for value in gids)
+            and (any(value != uid for value in uids) or any(value != gid for value in gids)))
+
+
 class DeploymentFailure(RuntimeError):
     """Activation failed, but the old release/layout was restored and verified."""
 
@@ -53,20 +91,22 @@ CWD_PROBE = (
 )
 
 
-def main_pid():
-    pid = int(run("systemctl", "show", SERVICE, "--property=MainPID", "--value", capture=True).strip())
+def main_pid(*, deadline=None):
+    pid = int(run("systemctl", "show", SERVICE, "--property=MainPID", "--value", timeout=startup_budget(deadline, 5), capture=True).strip())
     if pid <= 0:
-        raise RuntimeError(f"Service has no running MainPID: pid={pid}")
+        raise StartupPending(f"Service has no running MainPID: pid={pid}", {"pid": pid, "cwd": "<not available>"})
     return pid
 
 
-def process_directory(pid):
+def process_directory(pid, *, deadline=None):
     link = f"/proc/{pid}/cwd"
     try:
         cwd = os.readlink(link)
         details = os.stat(link)
         return {"cwd": cwd, "device": details.st_dev, "inode": details.st_ino, "mode": details.st_mode}
     except OSError as error:
+        if error.errno == errno.ENOENT:
+            raise StartupPending(f"Service process disappeared while inspecting cwd: pid={pid}", {"pid": pid, "cwd": "<process disappeared>"}) from error
         if error.errno not in {errno.EACCES, errno.EPERM}:
             raise RuntimeError(f"Cannot inspect service cwd: pid={pid}, proc_link={link}, error={type(error).__name__}") from error
         # LXC root can lack CAP_SYS_PTRACE for a different-UID process. Read as
@@ -74,23 +114,33 @@ def process_directory(pid):
         try:
             return json.loads(run("/usr/sbin/runuser", "-u", "jarvis", "--",
                                   "/usr/bin/python3.13", "-I", "-B", "-c", CWD_PROBE, str(pid),
-                                  timeout=15, capture=True))
+                                  timeout=startup_budget(deadline, 15), capture=True))
+        except subprocess.TimeoutExpired as fallback:
+            raise StartupPending(f"Service cwd probe timed out: pid={pid}", {"pid": pid, "cwd": "<probe timed out>"}) from fallback
+        except StartupPending:
+            raise
         except Exception as fallback:
             raise RuntimeError(f"Cannot inspect service cwd even as jarvis: pid={pid}, proc_link={link}, error={type(fallback).__name__}") from fallback
 
 
-def service_process():
-    pid = main_pid()
+def service_process(*, deadline=None):
+    pid = main_pid(deadline=deadline)
     try:
         status = Path(f"/proc/{pid}/status").read_text()
         uids = tuple(map(int, re.search(r"^Uid:\s+(.+)$", status, re.M)[1].split()))
         gids = tuple(map(int, re.search(r"^Gid:\s+(.+)$", status, re.M)[1].split()))
+    except FileNotFoundError as error:
+        raise StartupPending(f"Service process disappeared before identity inspection: pid={pid}", {"pid": pid, "cwd": "<process disappeared>"}) from error
     except (OSError, TypeError, ValueError) as error:
         raise RuntimeError(f"Cannot inspect service identity: pid={pid}, error={type(error).__name__}") from error
     uid, gid = runtime_identity()
     if len(uids) != 4 or len(gids) != 4 or any(value != uid for value in uids) or any(value != gid for value in gids):
-        raise RuntimeError(f"Service identity is not jarvis:jarvis: pid={pid}, actual_uids={uids}, actual_gids={gids}, expected_uid={uid}, expected_gid={gid}")
-    directory = process_directory(pid)
+        message = f"Service identity is not jarvis:jarvis: pid={pid}, actual_uids={uids}, actual_gids={gids}, expected_uid={uid}, expected_gid={gid}"
+        if transitional_identity(uids, gids, uid, gid):
+            raise StartupPending(message, {"pid": pid, "uid": uids[1], "gid": gids[1],
+                                           "uids": uids, "gids": gids, "cwd": startup_cwd(pid)})
+        raise RuntimeError(message)
+    directory = process_directory(pid, deadline=deadline)
     if not isinstance(directory, dict):
         raise RuntimeError(f"Invalid cwd inspection payload: pid={pid}")
     if (not isinstance(directory.get("cwd"), str) or not directory["cwd"]
@@ -98,8 +148,10 @@ def service_process():
             or not isinstance(directory.get("device"), int) or not isinstance(directory.get("inode"), int)
             or not stat.S_ISDIR(directory.get("mode", 0))):
         raise RuntimeError(f"Invalid/deleted service cwd: pid={pid}, actual_cwd={directory.get('cwd')!r}")
-    if main_pid() != pid:
-        raise RuntimeError(f"Service MainPID changed while inspecting cwd: initial_pid={pid}")
+    observed_pid = main_pid(deadline=deadline)
+    if observed_pid != pid:
+        raise StartupPending(f"Service MainPID changed while inspecting cwd: initial_pid={pid}, observed_pid={observed_pid}",
+                             {**directory, "pid": pid, "uid": uid, "gid": gid})
     return {**directory, "pid": pid, "uid": uid, "gid": gid}
 
 def run(*command, timeout=120, capture=False):
@@ -264,8 +316,7 @@ def prepare(destination):
         python, "-I", "-B", str(destination / "deployment/readiness.py"), timeout=120)
 
 
-def verify(checker, version, mode, expected_release):
-    run("systemctl", "is-active", "--quiet", SERVICE)
+def verify(checker, version, mode, expected_release, *, startup_timeout=30, poll_interval=0.5):
     expected = Path(os.fspath(expected_release)).resolve(strict=True)
     expected_stat = expected.stat()
     if not stat.S_ISDIR(expected_stat.st_mode):
@@ -274,21 +325,65 @@ def verify(checker, version, mode, expected_release):
     active_stat = CURRENT.stat()
     if (active_stat.st_dev, active_stat.st_ino) != expected_identity:
         raise RuntimeError(f"Active application path does not identify expected release: active={CURRENT}, expected_release={expected}")
-    def inspect():
+    def inspect(*, allow_startup=False, deadline=None):
         try:
-            process = service_process()
+            process = service_process(deadline=deadline) if deadline is not None else service_process()
+        except StartupPending as pending:
+            if allow_startup:
+                raise
+            raise RuntimeError(f"Settled service became unready during final verification: pid={pending.snapshot.get('pid', '<unknown>')}, actual_uid={pending.snapshot.get('uid', '<unknown>')}, actual_gid={pending.snapshot.get('gid', '<unknown>')}, actual_cwd={pending.snapshot.get('cwd', '<unknown>')!r}, expected_release={expected}; {pending}") from pending
         except RuntimeError as error:
             raise RuntimeError(f"Service verification inspection failed: expected_release={expected}; {error}") from error
         diagnostics = (f"pid={process['pid']}, actual_cwd={process['cwd']!r}, expected_release={str(expected)!r}, "
                        f"actual_directory_id={(process['device'], process['inode'])}, expected_directory_id={expected_identity}")
-        if (process["uid"], process["gid"]) != runtime_identity():
+        uid, gid = runtime_identity()
+        if (process["uid"], process["gid"]) != (uid, gid):
+            if allow_startup and process["uid"] in {0, uid} and process["gid"] in {0, gid}:
+                raise StartupPending(f"Activated service identity is not jarvis:jarvis: {diagnostics}", process)
             raise RuntimeError(f"Activated service identity is not jarvis:jarvis: {diagnostics}")
         # Kernel directory identity, not a textual path or non-strict proc resolve.
         # Read-only bind mounts / namespace aliases may legitimately spell cwd differently.
         if (process["device"], process["inode"]) != expected_identity:
             raise RuntimeError(f"Service process is not running from the activated release: {diagnostics}")
         return process
-    before = inspect()
+    if not math.isfinite(startup_timeout) or not math.isfinite(poll_interval) or startup_timeout <= 0 or poll_interval <= 0:
+        raise ValueError("Startup timeout and polling interval must be positive and finite")
+    deadline = time.monotonic() + startup_timeout
+    stable = None
+    last = {"pid": "<not sampled>", "uid": "<unknown>", "gid": "<unknown>", "cwd": "<unknown>"}
+    reason = "no stable process sample"
+    while True:
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"Service startup verification timed out after {startup_timeout}s: pid={last.get('pid', '<unknown>')}, "
+                               f"actual_uid={last.get('uid', '<unknown>')}, actual_gid={last.get('gid', '<unknown>')}, "
+                               f"actual_cwd={last.get('cwd', '<unknown>')!r}, expected_release={str(expected)!r}; pending={reason}")
+        try:
+            state = service_state(deadline=deadline)
+            if state.get("User") != "jarvis" or state.get("Group") != "jarvis":
+                raise RuntimeError(f"Terminal security failure: configured service identity is not jarvis:jarvis; expected_release={expected}")
+            if state.get("ActiveState") not in {"activating", "active"}:
+                raise RuntimeError(f"Terminal service startup failure: state={state.get('ActiveState')}, substate={state.get('SubState')}, expected_release={expected}")
+            process = inspect(allow_startup=True, deadline=deadline)
+            last = process
+            if state.get("ActiveState") == "active" and state.get("SubState") == "running":
+                if stable is not None and process["pid"] == stable["pid"] and time.monotonic() < deadline:
+                    before = process
+                    break
+                reason = "waiting for a second matching valid MainPID sample"
+                stable = process
+            else:
+                stable = None
+                reason = "systemd startup transition has not completed"
+        except StartupPending as pending:
+            stable = None
+            last = pending.snapshot or last
+            reason = str(pending)
+        except subprocess.TimeoutExpired as pending:
+            stable = None
+            reason = "systemd inspection exceeded remaining startup budget"
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(poll_interval, remaining))
     try:
         checker.wait(version, mode)
     except Exception as error:

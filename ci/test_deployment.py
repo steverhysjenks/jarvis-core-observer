@@ -93,6 +93,11 @@ class DeploymentTests(unittest.TestCase):
         self.current.stat.side_effect = self.previous.stat
         self.current.exists.side_effect = lambda: self.current_path.exists() or self.current.is_symlink()
         self.current.unlink.side_effect = self.restore_link_state
+        self.clock = 0.0
+        clock = patch.object(remote.time, "monotonic", side_effect=lambda: self.clock)
+        sleeper = patch.object(remote.time, "sleep", side_effect=self.advance_clock)
+        clock.start(); sleeper.start()
+        self.addCleanup(clock.stop); self.addCleanup(sleeper.stop)
         self.commands = Mock()
         self.preflight = Mock(return_value=("0.7.0", "live"))
         self.prepare = Mock()
@@ -102,6 +107,7 @@ class DeploymentTests(unittest.TestCase):
         fixtures = {
             "CURRENT": self.current, "RELEASES": self.store, "ENVIRONMENT": self.env, "STATE": self.state,
             "run": self.commands, "preflight": self.preflight, "prepare": self.prepare,
+            "service_state": Mock(return_value={"User": "jarvis", "Group": "jarvis", "ActiveState": "active", "SubState": "running"}),
             "health_module": Mock(return_value=self.checker), "verify": self.verify,
             "extract": Mock(return_value=(self.candidate, {"application_version": "0.7.1"})),
             "switch": self.activation,
@@ -111,6 +117,9 @@ class DeploymentTests(unittest.TestCase):
         self.addCleanup(context.stop)
         self.original_state = {str(p.relative_to(self.base)): p.read_bytes() for p in [self.env, *self.state.iterdir()]}
         self.addCleanup(self.assert_preserved_state)
+
+    def advance_clock(self, seconds):
+        self.clock += seconds
 
     def assert_preserved_state(self):
         for name, content in self.original_state.items():
@@ -282,7 +291,7 @@ class DeploymentTests(unittest.TestCase):
 
     def test_process_identity_and_cwd_gate_health_checks(self):
         for process, message in ((self.process(self.candidate, cwd=str(self.previous)), "activated release"),
-                                 (self.process(self.previous, uid=0, gid=0), "identity")):
+                                 (self.process(self.previous, uid=123, gid=456), "identity")):
             with patch.object(remote, "service_process", return_value=process), patch.object(remote, "runtime_identity", return_value=(1001, 1001)):
                 with self.assertRaisesRegex(RuntimeError, message):
                     ORIGINAL_VERIFY(self.checker, "0.7.0", "live", self.previous)
@@ -310,13 +319,99 @@ class DeploymentTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "health verification failed"):
                 ORIGINAL_VERIFY(self.checker, "0.7.0", "live", self.previous)
         self.checker.wait.side_effect = None
-        with patch.object(remote, "runtime_identity", return_value=(1001, 1001)), patch.object(remote, "service_process", side_effect=[process, self.process(self.previous, pid=4243)]):
+        with patch.object(remote, "runtime_identity", return_value=(1001, 1001)), patch.object(remote, "service_process", side_effect=[process, process, self.process(self.previous, pid=4243)]):
             with self.assertRaisesRegex(RuntimeError, "MainPID changed"):
                 ORIGINAL_VERIFY(self.checker, "0.7.0", "live", self.previous)
 
+    def test_transient_root_same_pid_settles_before_health(self):
+        root = self.process(self.previous, pid=11516, uid=0, gid=0)
+        ready = self.process(self.previous, pid=11516)
+        with patch.object(remote, "runtime_identity", return_value=(1001, 1001)), patch.object(remote, "service_process", side_effect=[root, ready, ready, ready]) as probe:
+            ORIGINAL_VERIFY(self.checker, "0.7.0", "live", self.previous, startup_timeout=2)
+        self.assertEqual(probe.call_count, 4)
+        self.assertEqual(self.clock, 1.0)
+        self.checker.wait.assert_called_once_with("0.7.0", "live")
+
+    def test_permanently_root_process_times_out_with_full_diagnostics(self):
+        root = self.process(self.previous, pid=11508, uid=0, gid=0)
+        with patch.object(remote, "runtime_identity", return_value=(1001, 1001)), patch.object(remote, "service_process", return_value=root):
+            with self.assertRaisesRegex(RuntimeError, "startup verification timed out") as result:
+                ORIGINAL_VERIFY(self.checker, "0.7.0", "live", self.previous, startup_timeout=2)
+        for detail in ("pid=11508", "actual_uid=0", "actual_gid=0", repr(str(self.previous)), "expected_release="):
+            self.assertIn(detail, str(result.exception))
+        self.assertEqual(self.clock, 2.0)
+        self.checker.wait.assert_not_called()
+
+    def test_changing_mainpid_during_startup_requires_new_stable_pair(self):
+        first = self.process(self.previous, pid=11508)
+        final = self.process(self.previous, pid=11516)
+        with patch.object(remote, "runtime_identity", return_value=(1001, 1001)), patch.object(remote, "service_process", side_effect=[first, final, final, final]):
+            ORIGINAL_VERIFY(self.checker, "0.7.0", "live", self.previous)
+        self.assertEqual(self.clock, 1.0)
+        self.checker.wait.assert_called_once()
+
+    def test_starting_systemd_state_waits_for_running_and_stable_identity(self):
+        running = {"User": "jarvis", "Group": "jarvis", "ActiveState": "active", "SubState": "running"}
+        starting = running | {"ActiveState": "activating", "SubState": "start"}
+        with patch.object(remote, "service_state", side_effect=[starting, running, running]), patch.object(remote, "service_process", return_value=self.process(self.previous)), patch.object(remote, "runtime_identity", return_value=(1001, 1001)):
+            ORIGINAL_VERIFY(self.checker, "0.7.0", "live", self.previous)
+        self.assertEqual(self.clock, 1.0)
+        self.checker.wait.assert_called_once()
+
+    def test_unexpected_nonroot_uid_and_root_unit_are_terminal(self):
+        with patch.object(remote, "runtime_identity", return_value=(1001, 1001)), patch.object(remote, "service_process", return_value=self.process(self.previous, uid=123, gid=456)):
+            with self.assertRaisesRegex(RuntimeError, "identity is not jarvis"):
+                ORIGINAL_VERIFY(self.checker, "0.7.0", "live", self.previous)
+        self.assertEqual(self.clock, 0)
+        with patch.object(remote, "service_state", return_value={"User": "root", "Group": "root"}), patch.object(remote, "service_process") as probe:
+            with self.assertRaisesRegex(RuntimeError, "Terminal security failure"):
+                ORIGINAL_VERIFY(self.checker, "0.7.0", "live", self.previous)
+            probe.assert_not_called()
+        self.checker.wait.assert_not_called()
+
+    def test_healthy_application_cannot_override_wrong_release_path(self):
+        self.checker.wait.return_value = None
+        with patch.object(remote, "runtime_identity", return_value=(1001, 1001)), patch.object(remote, "service_process", return_value=self.process(self.candidate)):
+            with self.assertRaisesRegex(RuntimeError, "not running from the activated release"):
+                ORIGINAL_VERIFY(self.checker, "0.7.0", "live", self.previous)
+        self.assertEqual(self.clock, 0)
+        self.checker.wait.assert_not_called()
+
+    def test_rollback_restart_polls_transient_root_before_verifying_restored_layout(self):
+        self.bootstrap_layout()
+        self.checker.wait.side_effect = [RuntimeError("new health failed"), None]
+        samples = 0
+        def sample(**unused):
+            nonlocal samples
+            samples += 1
+            directory = self.current.resolve()
+            return self.process(directory, pid=11508 if samples <= 2 else 11516,
+                                uid=0 if samples == 3 else 1001, gid=0 if samples == 3 else 1001)
+        with patch.object(remote, "verify", side_effect=ORIGINAL_VERIFY), patch.object(remote, "service_process", side_effect=sample), patch.object(remote, "runtime_identity", return_value=(1001, 1001)):
+            with self.assertRaises(remote.DeploymentFailure):
+                remote.bootstrap("a" * 40, self.base / "unused", "unused", remote.APPROVAL)
+        self.assertFalse(self.current.is_symlink())
+        self.assertEqual((self.current_path / "original.py").read_text(), "original baseline")
+        self.assertEqual(self.checker.wait.call_count, 2)
+        self.assertEqual(samples, 6)
+
+    def test_expired_probe_budget_times_out_instead_of_accepting_late_identity(self):
+        def late(**unused):
+            self.clock = 3
+            return self.process(self.previous)
+        with patch.object(remote, "service_process", side_effect=late), patch.object(remote, "runtime_identity", return_value=(1001, 1001)):
+            with self.assertRaisesRegex(RuntimeError, "timed out"):
+                ORIGINAL_VERIFY(self.checker, "0.7.0", "live", self.previous, startup_timeout=2)
+        self.checker.wait.assert_not_called()
+
+    def test_timeout_and_interval_must_be_finite_positive(self):
+        for timeout, interval in ((0, 0.5), (float("inf"), 0.5), (float("nan"), 0.5), (2, 0), (2, float("inf"))):
+            with self.assertRaises(ValueError):
+                ORIGINAL_VERIFY(self.checker, "0.7.0", "live", self.previous, startup_timeout=timeout, poll_interval=interval)
+
     def test_bootstrap_activation_and_recovery_use_real_verifier(self):
         self.bootstrap_layout()
-        def process():
+        def process(**unused):
             return self.process(self.current.resolve())
         with patch.object(remote, "verify", side_effect=ORIGINAL_VERIFY), patch.object(remote, "service_process", side_effect=process), patch.object(remote, "runtime_identity", return_value=(1001, 1001)):
             remote.bootstrap("a" * 40, self.base / "unused", "unused", remote.APPROVAL)
@@ -326,7 +421,7 @@ class DeploymentTests(unittest.TestCase):
     def test_bootstrap_recovery_to_real_directory_uses_real_verifier(self):
         self.bootstrap_layout()
         self.checker.wait.side_effect = [RuntimeError("new health failed"), None]
-        with patch.object(remote, "verify", side_effect=ORIGINAL_VERIFY), patch.object(remote, "service_process", side_effect=lambda: self.process(self.current.resolve())), patch.object(remote, "runtime_identity", return_value=(1001, 1001)):
+        with patch.object(remote, "verify", side_effect=ORIGINAL_VERIFY), patch.object(remote, "service_process", side_effect=lambda **unused: self.process(self.current.resolve())), patch.object(remote, "runtime_identity", return_value=(1001, 1001)):
             with self.assertRaises(remote.DeploymentFailure):
                 remote.bootstrap("a" * 40, self.base / "unused", "unused", remote.APPROVAL)
         self.assertFalse(self.current.is_symlink())
@@ -405,6 +500,11 @@ class DeploymentTests(unittest.TestCase):
 
 
 class ProcessInspectionTests(unittest.TestCase):
+    def setUp(self):
+        cwd = patch.object(remote, "startup_cwd", return_value="<pre-exec cwd>")
+        cwd.start()
+        self.addCleanup(cwd.stop)
+
     STATUS = "Uid:\t1001\t1001\t1001\t1001\nGid:\t1001\t1001\t1001\t1001\n"
     DIRECTORY = {"cwd": "read-only-namespace-alias", "device": 7, "inode": 42, "mode": 0o40755}
 
@@ -452,6 +552,26 @@ class ProcessInspectionTests(unittest.TestCase):
             with patch.object(remote, "run", side_effect=values), patch.object(remote.Path, "read_text", return_value=self.STATUS), patch.object(remote, "runtime_identity", return_value=(1001, 1001)), patch.object(remote, "process_directory", return_value=directory):
                 with self.assertRaisesRegex(RuntimeError, message):
                     remote.service_process()
+
+    def test_real_status_parser_reproduces_same_pid_root_to_jarvis_transition(self):
+        root_status = "Uid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\n"
+        final_status = "Uid:\t999\t999\t999\t999\nGid:\t991\t991\t991\t991\n"
+        with patch.object(remote, "run", return_value="11516"), patch.object(remote.Path, "read_text", side_effect=[root_status, final_status]), patch.object(remote, "runtime_identity", return_value=(999, 991)), patch.object(remote, "process_directory", return_value=self.DIRECTORY) as probe:
+            with self.assertRaises(remote.StartupPending) as pending:
+                remote.service_process()
+            self.assertEqual(pending.exception.snapshot["pid"], 11516)
+            self.assertEqual((pending.exception.snapshot["uid"], pending.exception.snapshot["gid"]), (0, 0))
+            probe.assert_not_called()
+            ready = remote.service_process()
+            self.assertEqual((ready["pid"], ready["uid"], ready["gid"]), (11516, 999, 991))
+
+    def test_budget_caps_query_timeout_and_rejects_expiry(self):
+        with patch.object(remote.time, "monotonic", return_value=4.5), patch.object(remote, "run", return_value="4242") as command:
+            self.assertEqual(remote.main_pid(deadline=5), 4242)
+            self.assertEqual(command.call_args.kwargs["timeout"], 0.5)
+        with patch.object(remote.time, "monotonic", return_value=5):
+            with self.assertRaises(remote.StartupPending):
+                remote.startup_budget(5, 15)
 
     def test_zero_mainpid_is_rejected_before_any_proc_read(self):
         with patch.object(remote, "run", return_value="0"), patch.object(remote.Path, "read_text") as read:
