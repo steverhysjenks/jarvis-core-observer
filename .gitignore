@@ -9,3 +9,7 @@ jarvis.env
 .pytest_cache/
 .mypy_cache/
 .DS_Store
+
+# Generated CI artifacts (never source or credentials).
+results/
+release-artifacts/

@@ -1,9 +1,9 @@
 # First GitLab CI pipeline
 
-This pipeline uses the existing Docker-executor runner tagged `docker` and `python:3.13-slim`, matching the reported production Python minor version. There are two stages and no deployment jobs.
+This pipeline uses the existing Docker-executor runner tagged `docker` and `python:3.13-slim`, matching the reported production Python minor version. Validation and offline testing are retained; protected-main pipelines now add packaging and separate manual production operations. See [controlled CD](cd.md) for bootstrap, approvals and rollback.
 
-- `validate`: installs unchanged runtime requirements and test tooling, runs `pip check`, checks Python syntax without importing application code, checks required repository files/test configuration, parses CI YAML, and verifies all 67 application hashes against the adopted baseline manifest.
-- `regression`: repeats static validation, then runs safety tests first. Only if those pass does it run the complete approved offline regression suite. Failure, missing approved-module coverage or no tests fails the job. Both pytest invocations produce JUnit XML under `results/`; available reports are uploaded even on failure and retained for seven days. If installation/startup fails before pytest can run, a JUnit report may not exist.
+- `validate`: also runs the standalone mocked deployment unit suite with JUnit reporting; installs unchanged runtime requirements and test tooling, runs `pip check`, checks Python syntax without importing application code, checks required repository files/test configuration and protected/manual CD rules, parses CI YAML, and reports application differences against the historical adopted-baseline manifest without rejecting future approved changes.
+- `regression`: repeats static validation, then runs safety tests first. Only if those pass does it run the complete approved offline regression suite. Failure, missing approved-module coverage or no tests fails the job. The regression job downloads no earlier-stage artifacts, preventing deployment-unit reports from being uploaded twice. Both pytest invocations produce JUnit XML under `results/`; available reports are uploaded even on failure and retained for seven days. If installation/startup fails before pytest can run, a JUnit report may not exist.
 
 ## Safety boundaries
 

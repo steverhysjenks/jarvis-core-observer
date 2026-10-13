@@ -1,5 +1,7 @@
 # Adopted production baseline (2026-10-12)
 
+Historical evidence: these hashes describe the initial adoption. CI reports differences but permits later approved source changes. See [controlled CD](cd.md) for the subsequent release process.
+
 The complete active application Python source from the supplied LXC 122 snapshot is the authoritative initial baseline. Its internal application version remains **0.7.0**. Existing public 1.1.0 documentation is historical and does not rename this adopted source. No production deployment or runtime verification was performed during this adoption.
 
 ## Scope and source parity

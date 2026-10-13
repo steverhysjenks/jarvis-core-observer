@@ -4,6 +4,7 @@ import ast
 import configparser
 import hashlib
 import json
+import re
 from pathlib import Path
 import shlex
 import sys
@@ -18,12 +19,15 @@ def validate(ci=False):
         "deployment/systemd/jarvis-core.service", "docs/production-baseline.md",
         "docs/production-baseline-hashes.json", "ci/run_offline.py",
         "tests/regression/test_isolation_guards.py",
+        "ci/package_release.py", "ci/deploy.py", "deployment/remote.py",
+        "deployment/readiness.py", "deployment/health.py", "docs/cd.md",
+        "ci/deployment_policy.py", "ci/test_deployment.py",
     )
     for name in required:
         if not (ROOT / name).is_file():
             raise ValueError(f"Missing required repository file: {name}")
     paths = list((ROOT / "app").rglob("*.py")) + list((ROOT / "tests").rglob("*.py"))
-    paths += list(ROOT.glob("test_*.py")) + [ROOT / "conftest.py"] + list((ROOT / "ci").glob("*.py"))
+    paths += list(ROOT.glob("test_*.py")) + [ROOT / "conftest.py"] + list((ROOT / "ci").glob("*.py")) + list((ROOT / "deployment").glob("*.py"))
     for path in paths:
         compile(path.read_text(encoding="utf-8"), str(path), "exec")
     manifest = json.loads((ROOT / "docs/production-baseline-hashes.json").read_text())
@@ -32,8 +36,12 @@ def validate(ci=False):
         path.relative_to(ROOT).as_posix(): hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
         for path in (ROOT / "app").rglob("*.py")
     }
-    if len(expected) != 67 or actual != expected:
-        raise ValueError("Application source differs from the adopted 67-file production baseline")
+    if len(expected) != 67 or any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in expected.values()):
+        raise ValueError("Historical baseline evidence is malformed")
+    # Historical evidence only: approved changes/additions/deletions are allowed.
+    changed = sorted(name for name in actual.keys() & expected.keys() if actual[name] != expected[name])
+    added, removed = sorted(actual.keys() - expected.keys()), sorted(expected.keys() - actual.keys())
+    print(f"Historical baseline delta (informational): {len(changed)} changed, {len(added)} added, {len(removed)} removed")
     if list((ROOT / "tests").rglob("conftest.py")):
         raise ValueError("Unreviewed nested pytest configuration is blocked")
     tree = ast.parse((ROOT / "conftest.py").read_text())
@@ -69,17 +77,38 @@ def validate(ci=False):
         if sys.version_info[:2] != (3, 13):
             raise ValueError("CI must use Python 3.13")
         import yaml
+        from deployment_policy import PACKAGE_RULE, RULES
         pipeline = yaml.safe_load((ROOT / ".gitlab-ci.yml").read_text())
-        if pipeline["stages"] != ["validate", "test"]:
-            raise ValueError("Only validation and testing stages are permitted")
+        if pipeline["stages"] != ["validate", "test", "package", "deploy"]:
+            raise ValueError("Unexpected CI/CD stage sequence")
         if pipeline["default"]["image"] != "python:3.13-slim" or pipeline["default"]["tags"] != ["docker"]:
             raise ValueError("Expected Python 3.13 image and docker runner tag")
-        if set(pipeline) != {"stages", "default", "validate", "regression"}:
+        if set(pipeline) != {"stages", "variables", "default", "validate", "regression", "package_release", ".cd",
+                             "production_preflight", "bootstrap_production", "deploy_production"}:
             raise ValueError("Unexpected pipeline job/configuration")
+        if pipeline["variables"] != {"JARVIS_OPERATION": "deploy"}:
+            raise ValueError("Only the non-secret deployment operation default belongs in YAML")
+        package = pipeline["package_release"]
+        if set(package["needs"]) != {"validate", "regression"} or package["rules"] != [{"if": PACKAGE_RULE}, {"when": "never"}]:
+            raise ValueError("Only a validated protected-main commit can be packaged")
+        cd = pipeline[".cd"]
+        prerequisites = {n if isinstance(n, str) else n["job"] for n in cd["needs"]}
+        if prerequisites != {"package_release", "validate", "regression"}:
+            raise ValueError("CD must depend on validation, regression and exact-commit artifacts")
+        if cd["resource_group"] != "jarvis-core-lxc122" or cd["interruptible"] is not False or cd["allow_failure"] is not False:
+            raise ValueError("Serialized, noninterruptible, blocking manual CD is required")
+        if cd["environment"]["name"] != "production" or cd["environment"]["deployment_tier"] != "production":
+            raise ValueError("CD credentials/approvals must use the production environment")
+        for name in ("production_preflight", "bootstrap_production", "deploy_production"):
+            job = pipeline[name]
+            if job["extends"] != ".cd" or job["rules"] != [{"if": RULES[name], "when": "manual"}, {"when": "never"}]:
+                raise ValueError(f"Unsafe production approval/branch rules: {name}")
+        if any("environment" in pipeline[name] for name in ("validate", "regression", "package_release")):
+            raise ValueError("CI jobs must not receive production-environment-scoped credentials")
         reports = pipeline["regression"]["artifacts"]
         if reports["when"] != "always" or reports["reports"]["junit"] != "results/*.xml":
             raise ValueError("Always-upload JUnit reporting is required")
-    print(f"Validated {len(paths)} Python files, {len(actual)} application hashes and {len(approved)} approved test modules")
+    print(f"Validated syntax/configuration for {len(paths)} Python files and {len(approved)} approved test modules; {len(actual)} current application hashes recorded")
     if not ci:
         print("Local static checks only; Python 3.13 and YAML parsing are checked by CI")
 
