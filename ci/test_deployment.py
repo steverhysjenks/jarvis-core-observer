@@ -4,7 +4,9 @@ No application imports, network, subprocess execution, production reads/writes,
 real systemd, sudo, SSH or SQLite connections are permitted by this runner.
 """
 import argparse
+import errno
 import hashlib
+import posixpath
 import importlib.util
 import io
 import json
@@ -88,9 +90,9 @@ class DeploymentTests(unittest.TestCase):
         self.current.__fspath__.return_value = str(self.current_path)
         self.current.is_symlink.return_value = True
         self.current.resolve.return_value = self.previous
-        self.current.stat.side_effect = self.current_path.stat
+        self.current.stat.side_effect = self.previous.stat
         self.current.exists.side_effect = lambda: self.current_path.exists() or self.current.is_symlink()
-        self.current.unlink.side_effect = lambda: setattr(self.current.is_symlink, "return_value", False)
+        self.current.unlink.side_effect = self.restore_link_state
         self.commands = Mock()
         self.preflight = Mock(return_value=("0.7.0", "live"))
         self.prepare = Mock()
@@ -114,13 +116,20 @@ class DeploymentTests(unittest.TestCase):
         for name, content in self.original_state.items():
             self.assertEqual((self.base / name).read_bytes(), content)
 
+    def restore_link_state(self):
+        self.current.is_symlink.return_value = False
+        self.current.resolve.return_value = self.current_path
+        self.current.stat.side_effect = self.current_path.stat
+
     def activate(self, target):
         self.current.is_symlink.return_value = True
         self.current.resolve.return_value = target
+        self.current.stat.side_effect = target.stat
 
     def bootstrap_layout(self):
         self.current.is_symlink.return_value = False
         self.current.resolve.return_value = self.current_path
+        self.current.stat.side_effect = self.current_path.stat
 
     def test_release_success_stops_switches_restarts_and_verifies(self):
         events = []
@@ -129,7 +138,7 @@ class DeploymentTests(unittest.TestCase):
         self.verify.side_effect = lambda *args: events.append("verify")
         remote.deploy("a" * 40, self.base / "unused", "unused")
         self.assertEqual(events, ["stop", "switch", "restart", "verify"])
-        self.verify.assert_called_once_with(self.checker, "0.7.1", "live")
+        self.verify.assert_called_once_with(self.checker, "0.7.1", "live", self.candidate)
         self.assertEqual(self.current.resolve(), self.candidate)
         self.assertTrue(self.previous.is_dir())
 
@@ -153,7 +162,7 @@ class DeploymentTests(unittest.TestCase):
             remote.deploy("a" * 40, self.base / "unused", "unused")
         self.assertEqual(self.current.resolve(), self.previous)
         self.assertEqual([call.args[1] for call in self.commands.call_args_list], ["stop", "restart", "stop", "restart"])
-        self.assertEqual(self.verify.call_args.args, (self.checker, "0.7.0", "live"))
+        self.assertEqual(self.verify.call_args.args, (self.checker, "0.7.0", "live", self.previous))
         self.assertTrue(self.candidate.is_dir())
 
     def test_restart_failure_restores_and_verifies_previous(self):
@@ -168,7 +177,7 @@ class DeploymentTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "restart failed"):
             remote.deploy("a" * 40, self.base / "unused", "unused")
         self.assertEqual(self.current.resolve(), self.previous)
-        self.verify.assert_called_once_with(self.checker, "0.7.0", "live")
+        self.verify.assert_called_once_with(self.checker, "0.7.0", "live", self.previous)
 
     def test_failed_rollback_reports_critical(self):
         self.verify.side_effect = RuntimeError("health failed")
@@ -194,7 +203,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertTrue(self.current.is_symlink())
         self.assertEqual((self.current.resolve() / "original.py").read_text(), "original baseline")
         self.prepare.assert_not_called()
-        self.verify.assert_called_once_with(self.checker, "0.7.0", "live")
+        self.verify.assert_called_once_with(self.checker, "0.7.0", "live", self.current.resolve())
 
     def test_bootstrap_health_failure_restores_real_directory(self):
         self.bootstrap_layout()
@@ -265,15 +274,90 @@ class DeploymentTests(unittest.TestCase):
         self.assertTrue(self.previous.is_dir())
         self.assertFalse(list(self.base.glob(".jarvis-core-link-*")))
 
+    def process(self, directory, *, cwd=None, pid=4242, uid=1001, gid=1001):
+        details = directory.stat()
+        return {"pid": pid, "cwd": str(directory) if cwd is None else cwd,
+                "device": details.st_dev, "inode": details.st_ino, "mode": details.st_mode,
+                "uid": uid, "gid": gid}
+
     def test_process_identity_and_cwd_gate_health_checks(self):
-        with patch.object(remote, "service_process", return_value=(self.candidate, 1001, 1001)), patch.object(remote, "runtime_identity", return_value=(1001, 1001)):
-            with self.assertRaisesRegex(RuntimeError, "activated release"):
-                ORIGINAL_VERIFY(self.checker, "0.7.0", "live")
-        with patch.object(remote, "service_process", return_value=(self.previous, 0, 0)), patch.object(remote, "runtime_identity", return_value=(1001, 1001)):
-            with self.assertRaisesRegex(RuntimeError, "identity"):
-                ORIGINAL_VERIFY(self.checker, "0.7.0", "live")
+        for process, message in ((self.process(self.candidate, cwd=str(self.previous)), "activated release"),
+                                 (self.process(self.previous, uid=0, gid=0), "identity")):
+            with patch.object(remote, "service_process", return_value=process), patch.object(remote, "runtime_identity", return_value=(1001, 1001)):
+                with self.assertRaisesRegex(RuntimeError, message):
+                    ORIGINAL_VERIFY(self.checker, "0.7.0", "live", self.previous)
         self.checker.wait.assert_not_called()
 
+    def test_directory_identity_accepts_namespace_alias_not_wrong_directory(self):
+        # Same dev/inode is valid even when a proc magic-link uses another spelling.
+        process = self.process(self.previous, cwd="namespace-alias-for-release")
+        with patch.object(remote, "service_process", return_value=process), patch.object(remote, "runtime_identity", return_value=(1001, 1001)):
+            ORIGINAL_VERIFY(self.checker, "0.7.0", "live", self.previous)
+        self.checker.wait.assert_called_once_with("0.7.0", "live")
+
+    def test_mismatch_diagnostics_include_pid_actual_and_expected_paths(self):
+        process = self.process(self.candidate)
+        with patch.object(remote, "service_process", return_value=process), patch.object(remote, "runtime_identity", return_value=(1001, 1001)):
+            with self.assertRaises(RuntimeError) as result:
+                ORIGINAL_VERIFY(self.checker, "0.7.0", "live", self.previous)
+        for value in ("pid=4242", repr(str(self.candidate)), repr(str(self.previous)), "actual_directory_id"):
+            self.assertIn(value, str(result.exception))
+
+    def test_health_failure_and_pid_change_still_fail_verification(self):
+        process = self.process(self.previous)
+        with patch.object(remote, "runtime_identity", return_value=(1001, 1001)), patch.object(remote, "service_process", return_value=process):
+            self.checker.wait.side_effect = RuntimeError("bad health")
+            with self.assertRaisesRegex(RuntimeError, "health verification failed"):
+                ORIGINAL_VERIFY(self.checker, "0.7.0", "live", self.previous)
+        self.checker.wait.side_effect = None
+        with patch.object(remote, "runtime_identity", return_value=(1001, 1001)), patch.object(remote, "service_process", side_effect=[process, self.process(self.previous, pid=4243)]):
+            with self.assertRaisesRegex(RuntimeError, "MainPID changed"):
+                ORIGINAL_VERIFY(self.checker, "0.7.0", "live", self.previous)
+
+    def test_bootstrap_activation_and_recovery_use_real_verifier(self):
+        self.bootstrap_layout()
+        def process():
+            return self.process(self.current.resolve())
+        with patch.object(remote, "verify", side_effect=ORIGINAL_VERIFY), patch.object(remote, "service_process", side_effect=process), patch.object(remote, "runtime_identity", return_value=(1001, 1001)):
+            remote.bootstrap("a" * 40, self.base / "unused", "unused", remote.APPROVAL)
+        self.assertTrue(self.current.is_symlink())
+        self.assertEqual((self.current.resolve() / "original.py").read_text(), "original baseline")
+
+    def test_bootstrap_recovery_to_real_directory_uses_real_verifier(self):
+        self.bootstrap_layout()
+        self.checker.wait.side_effect = [RuntimeError("new health failed"), None]
+        with patch.object(remote, "verify", side_effect=ORIGINAL_VERIFY), patch.object(remote, "service_process", side_effect=lambda: self.process(self.current.resolve())), patch.object(remote, "runtime_identity", return_value=(1001, 1001)):
+            with self.assertRaises(remote.DeploymentFailure):
+                remote.bootstrap("a" * 40, self.base / "unused", "unused", remote.APPROVAL)
+        self.assertFalse(self.current.is_symlink())
+        self.assertEqual((self.current_path / "original.py").read_text(), "original baseline")
+        self.assertEqual(self.checker.wait.call_count, 2)
+
+    def test_bootstrap_rollback_verification_failure_reports_restored_layout(self):
+        self.bootstrap_layout()
+        self.verify.side_effect = RuntimeError("verification failed")
+        with self.assertRaises(remote.RollbackVerificationFailure) as result:
+            remote.bootstrap("a" * 40, self.base / "unused", "unused", remote.APPROVAL)
+        self.assertIn("original directory restored and service restarted", str(result.exception))
+        self.assertFalse(self.current.is_symlink())
+        self.assertEqual((self.current_path / "original.py").read_text(), "original baseline")
+
+    def test_rollback_action_and_verification_errors_are_distinct(self):
+        self.verify.side_effect = RuntimeError("new verification failed")
+        with self.assertRaises(remote.RollbackVerificationFailure) as verification:
+            remote.deploy("a" * 40, self.base / "unused", "unused")
+        self.assertIn("previous release restored and service restarted", str(verification.exception))
+        self.verify.side_effect = RuntimeError("activation failed")
+        calls = 0
+        def fail_recovery(*arguments, **keywords):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                raise RuntimeError("rollback stop failed")
+        self.commands.side_effect = fail_recovery
+        with self.assertRaises(remote.RollbackActionFailure) as actions:
+            remote.deploy("a" * 40, self.base / "unused", "unused")
+        self.assertIn("rollback actions failed", str(actions.exception))
     def test_prepare_uses_release_venv_and_sandbox_not_application_server(self):
         with patch.object(remote, "runtime_identity", return_value=(1001, 1001)), patch.object(remote.os, "chown", create=True), patch.object(remote.os, "chmod"):
             ORIGINAL_PREPARE(self.candidate)
@@ -318,6 +402,62 @@ class DeploymentTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, message):
                 ORIGINAL_EXTRACT(archive, digest, "a" * 40)
         self.assertFalse((self.base / "escape.py").exists())
+
+
+class ProcessInspectionTests(unittest.TestCase):
+    STATUS = "Uid:\t1001\t1001\t1001\t1001\nGid:\t1001\t1001\t1001\t1001\n"
+    DIRECTORY = {"cwd": "read-only-namespace-alias", "device": 7, "inode": 42, "mode": 0o40755}
+
+    def test_old_non_strict_resolution_hides_permission_denied(self):
+        # Reproduce Linux realpath behavior without touching proc or any filesystem.
+        with patch.object(posixpath.os, "lstat", side_effect=PermissionError(errno.EACCES, "denied")):
+            self.assertEqual(posixpath.realpath("/proc/4242/cwd", strict=False), "/proc/4242/cwd")
+            with self.assertRaises(PermissionError):
+                posixpath.realpath("/proc/4242/cwd", strict=True)
+
+    def test_proc_permission_denied_retries_fixed_read_only_probe_as_jarvis(self):
+        with patch.object(remote.os, "readlink", side_effect=PermissionError(errno.EACCES, "denied")), patch.object(remote, "run", return_value=json.dumps(self.DIRECTORY)) as command:
+            self.assertEqual(remote.process_directory(4242), self.DIRECTORY)
+        self.assertEqual(command.call_args.args[:5], ("/usr/sbin/runuser", "-u", "jarvis", "--", "/usr/bin/python3.13"))
+        self.assertEqual(command.call_args.args[-1], "4242")
+        self.assertEqual(command.call_args.kwargs, {"timeout": 15, "capture": True})
+        self.assertNotIn("app", remote.CWD_PROBE)
+
+    def test_missing_process_does_not_fallback_or_mask_the_error(self):
+        with patch.object(remote.os, "readlink", side_effect=FileNotFoundError(errno.ENOENT, "gone")), patch.object(remote, "run") as command:
+            with self.assertRaisesRegex(RuntimeError, "pid=4242"):
+                remote.process_directory(4242)
+        command.assert_not_called()
+
+    def test_failed_same_user_probe_reports_inspection_failure(self):
+        with patch.object(remote.os, "readlink", side_effect=PermissionError(errno.EPERM, "denied")), patch.object(remote, "run", side_effect=RuntimeError("probe failed")):
+            with self.assertRaisesRegex(RuntimeError, "Cannot inspect service cwd even as jarvis: pid=4242"):
+                remote.process_directory(4242)
+
+    def test_service_snapshot_uses_effective_identity_and_stable_mainpid(self):
+        with patch.object(remote, "run", return_value="4242"), patch.object(remote.Path, "read_text", return_value=self.STATUS), patch.object(remote, "runtime_identity", return_value=(1001, 1001)), patch.object(remote, "process_directory", return_value=self.DIRECTORY):
+            process = remote.service_process()
+        self.assertEqual(process, self.DIRECTORY | {"pid": 4242, "uid": 1001, "gid": 1001})
+
+    def test_wrong_effective_uid_blocks_cwd_probe(self):
+        status = self.STATUS.replace("1001\t1001", "1001\t0", 1)
+        with patch.object(remote, "run", return_value="4242"), patch.object(remote.Path, "read_text", return_value=status), patch.object(remote, "runtime_identity", return_value=(1001, 1001)), patch.object(remote, "process_directory") as probe:
+            with self.assertRaisesRegex(RuntimeError, "identity is not jarvis:jarvis"):
+                remote.service_process()
+            probe.assert_not_called()
+
+    def test_changed_pid_and_deleted_cwd_fail_closed(self):
+        for values, directory, message in ((["4242", "4243"], self.DIRECTORY, "MainPID changed"),
+                                           (["4242"], self.DIRECTORY | {"cwd": "old-release (deleted)"}, "Invalid/deleted")):
+            with patch.object(remote, "run", side_effect=values), patch.object(remote.Path, "read_text", return_value=self.STATUS), patch.object(remote, "runtime_identity", return_value=(1001, 1001)), patch.object(remote, "process_directory", return_value=directory):
+                with self.assertRaisesRegex(RuntimeError, message):
+                    remote.service_process()
+
+    def test_zero_mainpid_is_rejected_before_any_proc_read(self):
+        with patch.object(remote, "run", return_value="0"), patch.object(remote.Path, "read_text") as read:
+            with self.assertRaisesRegex(RuntimeError, "no running MainPID"):
+                remote.service_process()
+            read.assert_not_called()
 
 
 class HealthTests(unittest.TestCase):
@@ -475,7 +615,7 @@ def main():
     report = Path(options.junitxml).resolve() if options.junitxml else None
     if report and not report.is_relative_to(ROOT / "results"):
         raise RuntimeError("JUnit output must be under repository results/")
-    with SafeTemporaryDirectory(prefix="jarvis-cd-units-") as temporary:
+    with SafeTemporaryDirectory(dir=ROOT, prefix=".cd-unit-") as temporary:
         SAFE_ROOT = Path(temporary).resolve()
         install_test_safety(SAFE_ROOT, report)
         suite = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])

@@ -3,6 +3,7 @@
 No environment file or SQLite contents are read/changed by this controller.
 """
 from contextlib import contextmanager
+import errno
 import hashlib
 import importlib.util
 import json
@@ -32,13 +33,74 @@ def runtime_identity():
     return pwd.getpwnam("jarvis").pw_uid, grp.getgrnam("jarvis").gr_gid
 
 
-def service_process():
-    pid = int(run("systemctl", "show", SERVICE, "--property=MainPID", "--value", capture=True).strip())
-    status = Path(f"/proc/{pid}/status").read_text()
-    uid = int(re.search(r"^Uid:\s+(\d+)", status, re.M)[1])
-    gid = int(re.search(r"^Gid:\s+(\d+)", status, re.M)[1])
-    return Path(f"/proc/{pid}/cwd").resolve(), uid, gid
+class DeploymentFailure(RuntimeError):
+    """Activation failed, but the old release/layout was restored and verified."""
 
+
+class RollbackActionFailure(RuntimeError):
+    """The stop/restore/restart recovery operations did not complete."""
+
+
+class RollbackVerificationFailure(RuntimeError):
+    """Recovery operations completed, but restored-service verification failed."""
+
+
+# Fixed, read-only stdlib probe; no app imports, environment or SQLite access.
+CWD_PROBE = (
+    "import json,os,sys; p='/proc/'+str(int(sys.argv[1]))+'/cwd'; "
+    "c=os.readlink(p); s=os.stat(p); "
+    "print(json.dumps({'cwd':c,'device':s.st_dev,'inode':s.st_ino,'mode':s.st_mode}))"
+)
+
+
+def main_pid():
+    pid = int(run("systemctl", "show", SERVICE, "--property=MainPID", "--value", capture=True).strip())
+    if pid <= 0:
+        raise RuntimeError(f"Service has no running MainPID: pid={pid}")
+    return pid
+
+
+def process_directory(pid):
+    link = f"/proc/{pid}/cwd"
+    try:
+        cwd = os.readlink(link)
+        details = os.stat(link)
+        return {"cwd": cwd, "device": details.st_dev, "inode": details.st_ino, "mode": details.st_mode}
+    except OSError as error:
+        if error.errno not in {errno.EACCES, errno.EPERM}:
+            raise RuntimeError(f"Cannot inspect service cwd: pid={pid}, proc_link={link}, error={type(error).__name__}") from error
+        # LXC root can lack CAP_SYS_PTRACE for a different-UID process. Read as
+        # the already-verified jarvis identity, rather than weakening the check.
+        try:
+            return json.loads(run("/usr/sbin/runuser", "-u", "jarvis", "--",
+                                  "/usr/bin/python3.13", "-I", "-B", "-c", CWD_PROBE, str(pid),
+                                  timeout=15, capture=True))
+        except Exception as fallback:
+            raise RuntimeError(f"Cannot inspect service cwd even as jarvis: pid={pid}, proc_link={link}, error={type(fallback).__name__}") from fallback
+
+
+def service_process():
+    pid = main_pid()
+    try:
+        status = Path(f"/proc/{pid}/status").read_text()
+        uids = tuple(map(int, re.search(r"^Uid:\s+(.+)$", status, re.M)[1].split()))
+        gids = tuple(map(int, re.search(r"^Gid:\s+(.+)$", status, re.M)[1].split()))
+    except (OSError, TypeError, ValueError) as error:
+        raise RuntimeError(f"Cannot inspect service identity: pid={pid}, error={type(error).__name__}") from error
+    uid, gid = runtime_identity()
+    if len(uids) != 4 or len(gids) != 4 or any(value != uid for value in uids) or any(value != gid for value in gids):
+        raise RuntimeError(f"Service identity is not jarvis:jarvis: pid={pid}, actual_uids={uids}, actual_gids={gids}, expected_uid={uid}, expected_gid={gid}")
+    directory = process_directory(pid)
+    if not isinstance(directory, dict):
+        raise RuntimeError(f"Invalid cwd inspection payload: pid={pid}")
+    if (not isinstance(directory.get("cwd"), str) or not directory["cwd"]
+            or directory["cwd"].endswith(" (deleted)")
+            or not isinstance(directory.get("device"), int) or not isinstance(directory.get("inode"), int)
+            or not stat.S_ISDIR(directory.get("mode", 0))):
+        raise RuntimeError(f"Invalid/deleted service cwd: pid={pid}, actual_cwd={directory.get('cwd')!r}")
+    if main_pid() != pid:
+        raise RuntimeError(f"Service MainPID changed while inspecting cwd: initial_pid={pid}")
+    return {**directory, "pid": pid, "uid": uid, "gid": gid}
 
 def run(*command, timeout=120, capture=False):
     return subprocess.run(command, check=True, timeout=timeout, env=CLEAN_ENV,
@@ -83,7 +145,8 @@ def preflight():
     if str(ENVIRONMENT) not in environment_files:
         raise RuntimeError("Service must retain the production environment file")
     run("systemctl", "is-active", "--quiet", SERVICE)
-    _, actual_uid, actual_gid = service_process()
+    process = service_process()
+    actual_uid, actual_gid = process["uid"], process["gid"]
     if (actual_uid, actual_gid) != (uid, gid):
         raise RuntimeError("Running service does not use jarvis:jarvis")
     if not CURRENT.is_dir() or os.path.ismount(CURRENT):
@@ -201,14 +264,41 @@ def prepare(destination):
         python, "-I", "-B", str(destination / "deployment/readiness.py"), timeout=120)
 
 
-def verify(checker, version, mode):
+def verify(checker, version, mode, expected_release):
     run("systemctl", "is-active", "--quiet", SERVICE)
-    cwd, uid, gid = service_process()
-    if cwd != CURRENT.resolve():
-        raise RuntimeError("Service process is not running from the activated release")
-    if (uid, gid) != runtime_identity():
-        raise RuntimeError("Activated service identity is not jarvis:jarvis")
-    checker.wait(version, mode)
+    expected = Path(os.fspath(expected_release)).resolve(strict=True)
+    expected_stat = expected.stat()
+    if not stat.S_ISDIR(expected_stat.st_mode):
+        raise RuntimeError(f"Expected release is not a directory: expected_release={expected}")
+    expected_identity = (expected_stat.st_dev, expected_stat.st_ino)
+    active_stat = CURRENT.stat()
+    if (active_stat.st_dev, active_stat.st_ino) != expected_identity:
+        raise RuntimeError(f"Active application path does not identify expected release: active={CURRENT}, expected_release={expected}")
+    def inspect():
+        try:
+            process = service_process()
+        except RuntimeError as error:
+            raise RuntimeError(f"Service verification inspection failed: expected_release={expected}; {error}") from error
+        diagnostics = (f"pid={process['pid']}, actual_cwd={process['cwd']!r}, expected_release={str(expected)!r}, "
+                       f"actual_directory_id={(process['device'], process['inode'])}, expected_directory_id={expected_identity}")
+        if (process["uid"], process["gid"]) != runtime_identity():
+            raise RuntimeError(f"Activated service identity is not jarvis:jarvis: {diagnostics}")
+        # Kernel directory identity, not a textual path or non-strict proc resolve.
+        # Read-only bind mounts / namespace aliases may legitimately spell cwd differently.
+        if (process["device"], process["inode"]) != expected_identity:
+            raise RuntimeError(f"Service process is not running from the activated release: {diagnostics}")
+        return process
+    before = inspect()
+    try:
+        checker.wait(version, mode)
+    except Exception as error:
+        raise RuntimeError(f"Service health verification failed: pid={before['pid']}, actual_cwd={before['cwd']!r}, expected_release={expected}; {error}") from error
+    after = inspect()
+    if after["pid"] != before["pid"]:
+        raise RuntimeError(f"Service MainPID changed during health verification: initial_pid={before['pid']}, pid={after['pid']}, actual_cwd={after['cwd']!r}, expected_release={expected}")
+    active_stat = CURRENT.stat()
+    if (active_stat.st_dev, active_stat.st_ino) != expected_identity:
+        raise RuntimeError(f"Active release changed during health verification: pid={after['pid']}, expected_release={expected}")
 
 def deploy(sha, bundle_path, digest):
     old_version, mode = preflight()
@@ -222,18 +312,20 @@ def deploy(sha, bundle_path, digest):
         run("systemctl", "stop", SERVICE)
         switch(destination)
         run("systemctl", "restart", SERVICE)
-        verify(checker, metadata["application_version"], mode)
-    except BaseException:
+        verify(checker, metadata["application_version"], mode, destination)
+    except BaseException as activation:
         print("Activation failed; restoring the previous application release", file=sys.stderr)
         try:
             run("systemctl", "stop", SERVICE)
             switch(previous)
             run("systemctl", "restart", SERVICE)
-            verify(checker, old_version, mode)
-            print("Previous release restored and verified; deployment remains FAILED", file=sys.stderr)
         except BaseException as recovery:
-            raise RuntimeError("CRITICAL: automatic application rollback failed; operator recovery required") from recovery
-        raise
+            raise RollbackActionFailure(f"CRITICAL: deployment rollback actions failed; original_failure={activation}; recovery_error={recovery}") from recovery
+        try:
+            verify(checker, old_version, mode, previous)
+        except BaseException as recovery:
+            raise RollbackVerificationFailure(f"CRITICAL: previous release restored and service restarted, but rollback verification failed; original_failure={activation}; verification_error={recovery}") from recovery
+        raise DeploymentFailure(f"Deployment unsuccessful; previous release restored and verified; original_failure={activation}") from activation
     print(json.dumps({"activated_commit": sha, "release": str(destination), "previous": str(previous)}))
 
 
@@ -245,7 +337,6 @@ def bootstrap(sha, bundle_path, digest, approval):
         raise RuntimeError("Already bootstrapped; use normal deployment")
     if RELEASES.exists() and RELEASES.stat().st_dev != CURRENT.stat().st_dev:
         raise RuntimeError("Cannot move baseline across filesystems")
-    # Extract the trusted checker, but do NOT install/activate the pipeline release.
     tools, _ = extract(bundle_path, digest, sha)
     checker = health_module(tools / "deployment/health.py")
     previous = RELEASES / f"bootstrap-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{uuid.uuid4().hex[:8]}"
@@ -254,13 +345,11 @@ def bootstrap(sha, bundle_path, digest, approval):
         os.rename(CURRENT, previous)
         switch(previous)
         run("systemctl", "restart", SERVICE)
-        verify(checker, version, mode)
-    except BaseException:
+        verify(checker, version, mode, previous)
+    except BaseException as activation:
         print("Bootstrap failed; restoring original real-directory layout", file=sys.stderr)
         try:
             run("systemctl", "stop", SERVICE)
-            # Inspect the filesystem, not a boolean set after rename: interruption
-            # can happen after the atomic move but before bookkeeping executes.
             if previous.is_dir():
                 if CURRENT.is_symlink():
                     CURRENT.unlink()
@@ -268,12 +357,16 @@ def bootstrap(sha, bundle_path, digest, approval):
                     raise RuntimeError("Refusing to overwrite an unexpected bootstrap recovery path")
                 os.rename(previous, CURRENT)
             run("systemctl", "restart", SERVICE)
-            verify(checker, version, mode)
         except BaseException as recovery:
-            raise RuntimeError("CRITICAL: bootstrap recovery failed; operator intervention required") from recovery
-        raise
+            raise RollbackActionFailure(f"CRITICAL: bootstrap rollback actions failed; original_failure={activation}; recovery_error={recovery}") from recovery
+        try:
+            if CURRENT.is_symlink():
+                raise RuntimeError("Bootstrap recovery did not restore the real-directory layout")
+            verify(checker, version, mode, CURRENT)
+        except BaseException as recovery:
+            raise RollbackVerificationFailure(f"CRITICAL: original directory restored and service restarted, but bootstrap rollback verification failed; original_failure={activation}; verification_error={recovery}") from recovery
+        raise DeploymentFailure(f"Bootstrap unsuccessful; original directory restored and verified; original_failure={activation}") from activation
     print(json.dumps({"bootstrap_complete": True, "preserved_baseline": str(previous), "active": str(CURRENT)}))
-
 
 def interrupted(signum, frame):
     raise RuntimeError(f"Deployment interrupted by signal {signum}")

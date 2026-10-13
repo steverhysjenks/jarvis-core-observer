@@ -13,3 +13,6 @@ jarvis.env
 # Generated CI artifacts (never source or credentials).
 results/
 release-artifacts/
+
+# Local offline CD fixtures stay inside the repository and are removed after tests.
+.cd-unit-*/
