@@ -1,0 +1,72 @@
+# Controlled GitLab CD: LXC 122
+
+## Scope and safeguards
+
+Target: Debian 13 / Python 3.13 on `192.168.0.62`, SSH identity `ansible` with passwordless sudo. Runtime remains `jarvis:jarvis` under the unchanged `jarvis-core` systemd unit. No Docker runtime or service accounts are added on the LXC. The CI runner continues to use its existing Docker executor.
+
+Validation and offline regression jobs are unchanged in purpose. Historical `docs/production-baseline-hashes.json` records the original internal 0.7.0 source; differences are now informational rather than a prohibition on future approved code changes. Do not rewrite this evidence to make a new release appear to be the original baseline.
+
+Protected-main push/web pipelines package application Python source, runtime requirements and deployment checkers directly from Git objects at `CI_COMMIT_SHA`. Tracked checkout changes and untracked source/test/deployment files are rejected. The package is created only after validation and regression succeed. Deployment independently compares artifact files/controller with that same commit, checks its digest/manifest/version, and rejects a manual pipeline if remote main has moved. No working-tree or branch-name archive is deployed. Artifact expiry is seven days; after expiry, use a new validated pipeline rather than rebuilding an unvalidated artifact.
+
+Three manual operation choices share `resource_group: jarvis-core-lxc122` and an additional target-side flock for mutations. Only one production operation is offered per pipeline, selected with `JARVIS_OPERATION` (`deploy` by default; `preflight` or `bootstrap` in a manually created main pipeline). Deploy/bootstrap jobs are blocking, noninterruptible and require explicit clicks. Bootstrap additionally requires `JARVIS_BOOTSTRAP_APPROVAL=MIGRATE_REAL_DIRECTORY_LXC122`. Do not set that phrase as a permanent project variable.
+
+## GitLab configuration prerequisites (not configured by this change)
+
+1. Protect `main`: restrict push/merge rights, prohibit force pushes, require reviewed merge requests and successful validation/regression. Restrict changes to CI/deployment files through review/CODEOWNERS policy as appropriate.
+2. Protect the `production` environment and explicitly restrict Allowed to deploy to the designated maintainers/operators. Configure deployment approval rules if available/required. A manual job is a deliberate operator gate; it is not automatically an independent second-person approval. Protected-environment/approval availability depends on GitLab tier. If unavailable, do not enable production credentials until equivalent operator access restrictions are established.
+3. Register/confirm a protected runner tagged `docker`, trusted for protected-main jobs. It must reach the GitLab registry/package index and `192.168.0.62:22`. Do not mount host secrets, production storage or a Docker socket into jobs; avoid privileged mode. Enable prevention of outdated deployment jobs and configure the resource group processing policy if appropriate.
+4. Add **protected, file-type** variables, both environment-scoped to **production**: `JARVIS_SSH_PRIVATE_KEY` (the existing ansible deployment private key) and `JARVIS_SSH_KNOWN_HOSTS` (verified host-key entries for `192.168.0.62`). Preserve the trailing newline on key material. Treat both as sensitive; never echo values. Do not provide HA/MA/Ollama tokens, passwords, environment-file contents or SQLite to CI.
+5. Before enabling credentials, verify both variables are Protected + File type + exact environment scope production (never "*") and disable **Allow merge request pipelines to access protected variables and runners**. Check project/group/instance variables and runner-injected copies for conflicting names or wildcard scopes. Repository rules cannot prevent GitLab from injecting a misconfigured secret into an unrelated job. These server settings remain unverified under the no-live-access restriction. See [GitLab protected resources in MR pipelines](https://docs.gitlab.com/ci/pipelines/merge_request_pipelines/#control-access-to-protected-variables-and-runners).
+6. Verify the SSH host fingerprint out of band against Proxmox/LXC console evidence. The job uses strict host-key checking, ignores global/user SSH configuration, disables passwords/agent forwarding and never runs ssh-keyscan or accepts a new key automatically.
+7. Restrict who may supply pipeline/manual-job variables; do not override predefined `CI_*` identity variables. Protect deployment-variable visibility. Disable CI debug tracing for deployment jobs.
+
+References: [protected environments](https://docs.gitlab.com/ci/environments/protected_environments/), [file/protected variables](https://docs.gitlab.com/ci/variables/), and [resource-group deployment safety](https://docs.gitlab.com/ci/environments/deployment_safety/).
+
+## Read-only preflight
+
+After the reviewed change reaches protected main and its validation/tests pass, create a main web pipeline with `JARVIS_OPERATION=preflight`, then manually approve `production_preflight`. This operation sends the verified controller over stdin: it uploads no files and creates no host lock/release directory. It reads service properties, OS/interpreter/user identity, environment-file existence/permissions (never contents), state-file existence (never SQLite contents), current layout and available disk space, and GETs loopback `/health` and `/observer/status`. It does not install packages, stop/restart services, change symlinks or run another Observer.
+
+Preflight requires the existing service to be active/healthy and use `jarvis:jarvis`, `/opt/jarvis-core` and the expected Uvicorn executable/environment file. It refuses workers/reload flags, mount-point application paths, unsafe release-store ownership/permissions, incompatible filesystems and less than 2 GiB free space. An existing env file readable by other users is flagged and rejected; its permissions are never changed by the controller. Record the output as review evidence. The reported 9.7 GB free space is a starting observation, not a guarantee that installation will fit.
+
+Also confirm through the LXC console, without changing anything: Python 3.13 venv/ensurepip support; systemd transient-unit sandbox support inside this LXC; loopback port 8000; expected Observer cycle duration; absence of external tools concurrently editing `/opt/jarvis-core`; and a current independently managed backup/snapshot policy for persistent state. Do not print the environment or SQLite contents.
+
+## Initial bootstrap: separate explicit approval
+
+Bootstrap is a maintenance operation, not the first new-code deployment.
+
+1. Review the preflight evidence, disk usage, original layout and recovery procedure. Arrange a short outage and Proxmox console access. Confirm independently managed backups/snapshots exist; no database backup/restore is automated here.
+2. Run a fresh protected-main web pipeline with `JARVIS_OPERATION=bootstrap`. Wait for validation/regression/package success. Enter the approval phrase only for this operation and manually approve `bootstrap_production` (plus any configured environment approvals).
+3. The controller repeats preflight under its host lock and refuses an already-symlinked installation. It extracts the exact-commit checker into an inactive release directory without activating/installing that candidate.
+4. Stop `jarvis-core`, rename the entire existing real `/opt/jarvis-core` directory to `/opt/jarvis-releases/bootstrap-<UTC>-<id>`, and atomically create `/opt/jarvis-core` as a symlink to that preserved directory. The move must be on the same filesystem. Original code, virtualenv and ownership are preserved. Existing virtualenv shebangs using `/opt/jarvis-core` continue to resolve through the symlink.
+5. Restart the existing service; verify its actual process identity/working directory, `/health` version and unchanged Observer mode, no last_error and at least one successful Observer cycle. On failure, stop the service, restore the original real directory, restart and verify it. Failure remains a failed GitLab job even if recovery succeeds.
+6. Inspect the resulting layout and status. Keep the preserved baseline for rollback. Do not approve a normal deployment until bootstrap succeeded.
+
+No environment, state, unit or runtime account changes are part of bootstrap. Bootstrap does not change the application to 1.1.0 and does not substitute the pipeline source for the existing baseline.
+
+## First and subsequent release deployment
+
+Use a fresh, successful protected-main pipeline and review the exact commit/diff, test evidence and any data-schema implications before manually approving `deploy_production`. For the first release, choose the reviewed adopted baseline if the goal is to establish the release mechanism without functional changes. Changes to application code remain normal reviewed commits; no historical hash rewrite is necessary.
+
+The controller:
+
+1. Repeats preflight and requires `/opt/jarvis-core` already be a managed symlink. Validates archive integrity, regular-file paths and the release manifest. Creates `/opt/jarvis-releases/<full-SHA>-<UTC>-<id>`.
+2. Creates a new release-specific Python 3.13 venv; installs **only** requirements.txt and runs pip check. Test dependencies are not installed in production. Packages are downloaded during preparation; indexes/certificates/OS build dependencies must already be suitable. No OS packages are installed on the LXC by this controller.
+3. Makes release code/venv root-owned with group jarvis. Runs an import/routes readiness check as jarvis via a transient systemd unit with dummy service settings, read-only filesystem protections, private tmp, inaccessible production environment/state directories and **PrivateNetwork=yes**. No production EnvironmentFile is loaded; no ASGI server/lifespan starts; Python guards reject network, database and process side effects. Unsupported LXC namespace/sandbox setup fails preparation rather than bypassing protection.
+4. Stops the single existing application service, atomically replaces its symlink, then restarts the same unit. It does not start a second Observer. Existing environment and all `/var/lib/jarvis-core` paths remain external to every release and untouched by deployment scripts.
+5. Checks systemd process UID/GID and resolved working directory, loopback health/version, unchanged mode and at least one completed error-free Observer cycle within 180 seconds. Health probes ignore proxy configuration. A healthy static endpoint alone is insufficient.
+
+Application runtime naturally resumes using/writing its existing SQLite state after restart; the deployment controller does not copy, truncate, restore, migrate or relocate that state.
+
+## Automatic rollback and operator recovery
+
+If activation/restart/health verification fails, the controller stops the failed release, atomically points `/opt/jarvis-core` back to its recorded previous target, restarts and verifies the old version/mode/Observer cycle. It never deletes the previous or failed release and never retries automatically. If recovery fails, the job reports CRITICAL and requires console/operator intervention. Failed preparation leaves the active release untouched and retains its inactive directory for investigation.
+
+The same release lock must be held for any later manual recovery. Record the failed and previous target paths from the job/controller output; independently verify they are direct children of `/opt/jarvis-releases`. Stop the service before changing the link; restore the known previous target and restart/verify it using the console if SSH is unavailable. Do not blindly manipulate paths or delete release directories.
+
+**Application-file rollback does not reverse database migrations or data mutations.** SQLite may have changed during a failed release's first Observer cycle/startup. Approve only backward-compatible changes when relying on automatic code rollback. Schema/data changes require a separately reviewed migration/backup/restore plan, with downtime and possible data loss accounted for. Automatic SQLite restore is intentionally absent.
+
+Bootstrap recovery inspects the filesystem after a rename rather than depending on a post-rename flag, and refuses to overwrite an unexpected real directory. Managed symlink targets must be real directories directly inside the release store. SIGINT/SIGTERM are handled during activation, but hard kill, host power loss, disk/filesystem failure, SSH loss or systemd failure can prevent recovery from completing. GitLab resource groups serialize this project's jobs, not all host administrators; flock adds controller serialization but does not lock out unrelated manual systemctl/filesystem operations. Retention is manual and must preserve the active target, immediate rollback target and bootstrap baseline. Monitor disk growth; no automatic pruning is implemented.
+
+## Local validation / remaining approvals
+
+Local static checks and the standalone `python -B ci/test_deployment.py` unit runner are permitted. Unit tests use temporary directories, mocked service/process commands and a Python audit hook that blocks real network/process/database access and mutations outside temporary/report paths. They do not import the application or use production paths for I/O. Linux-specific imports are deferred until their runtime boundaries. Windows may skip the actual temporary symlink integration check if user privileges prohibit symlink creation; Linux CI runs it. Never execute the transport/controller or packaging entrypoints against production as validation. GitLab variables, protection settings, host keys, sudo access, LXC sandbox support and runtime assumptions have not been checked remotely or configured. End-to-end readiness/activation/rollback remains unexercised until a separately approved maintenance operation. CI dependency/image pins are not a full reproducible environment lock; OS architecture and package-index availability remain assumptions.
