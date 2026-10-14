@@ -10,13 +10,13 @@ RULES = {
 
 
 def require_production_context(environment, action):
-    if action not in {"preflight", "bootstrap", "deploy"}:
+    if action not in {"preflight", "bootstrap", "deploy", "acceptance"}:
         raise RuntimeError("Unknown production action")
     if (environment.get("CI_COMMIT_BRANCH") != "main"
             or environment.get("CI_COMMIT_REF_PROTECTED") != "true"
             or environment.get("CI_ENVIRONMENT_NAME") != "production"
             or environment.get("CI_PIPELINE_SOURCE") not in {"push", "web"}
-            or environment.get("JARVIS_OPERATION", "deploy") != action):
+            or environment.get("JARVIS_OPERATION", "deploy") != ("deploy" if action == "acceptance" else action)):
         raise RuntimeError("Production operations require the protected-main production job context")
-    if action != "deploy" and environment.get("CI_PIPELINE_SOURCE") != "web":
+    if action in {"preflight", "bootstrap"} and environment.get("CI_PIPELINE_SOURCE") != "web":
         raise RuntimeError("Preflight/bootstrap require separately approved web pipelines")

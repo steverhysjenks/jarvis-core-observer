@@ -4,6 +4,7 @@ stages:
   - test
   - package
   - deploy
+  - acceptance
 
 variables:
   JARVIS_OPERATION: deploy
@@ -113,3 +114,39 @@ deploy_production:
     - when: never
   script:
     - python -B ci/deploy.py deploy
+  artifacts:
+    when: on_success
+    expire_in: 7 days
+    paths:
+      - results/deployment.json
+# Runs only after the explicitly approved application deployment succeeds.
+production_acceptance:
+  extends: .cd
+  stage: acceptance
+  timeout: 30m
+  needs:
+    - job: deploy_production
+      artifacts: true
+    - job: package_release
+      artifacts: true
+    - job: validate
+      artifacts: false
+    - job: regression
+      artifacts: false
+  environment:
+    name: production
+    deployment_tier: production
+    action: verify
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" && $CI_COMMIT_REF_PROTECTED == "true" && ($CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "web") && $JARVIS_OPERATION == "deploy"'
+      when: on_success
+    - when: never
+  script:
+    - python -B ci/deploy.py acceptance
+  artifacts:
+    when: always
+    expire_in: 7 days
+    paths:
+      - results/production.xml
+    reports:
+      junit: results/production.xml

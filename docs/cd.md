@@ -104,3 +104,7 @@ Wrong declared User/Group, unexpected non-root credential values, failed/inactiv
 Timeout diagnostics record the last available PID, actual UID/GID, cwd (or explicit unavailable indication), expected release directory and pending reason. They contain no environment contents or credentials. Bootstrap recovery uses the same bounded polling against the restored real directory and preserves the distinct rollback-action/rollback-verification error classes.
 
 The mocked offline tests exercise root-to-jarvis on the same PID, startup PID replacement, permanently root-owned processes, deadline expiry, terminal security/path failures and rollback after restart. They use a fake monotonic clock and mocked sleep/commands, so no real waits, systemd calls or production access occur. Kernel/systemd behavior in this LXC remains an operational assumption until separately approved preflight and bootstrap; successful Linux Python 3.13 CI remains required before retrying. Database rollback limitations and all existing approval/protection requirements are unchanged.
+
+## Production acceptance
+
+Successful normal deployments now feed a protected, version-matched read-only acceptance stage. See [production regression](production-regression.md) for its test profile, JUnit retrieval, safety boundaries and failure semantics. Acceptance failure does not change existing activation/health rollback behavior or restore SQLite.
