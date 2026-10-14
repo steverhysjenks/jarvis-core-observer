@@ -22,6 +22,8 @@ def validate(ci=False):
         "ci/package_release.py", "ci/deploy.py", "deployment/remote.py",
         "deployment/readiness.py", "deployment/health.py", "docs/cd.md",
         "ci/deployment_policy.py", "ci/test_deployment.py",
+        "deployment/acceptance.py", "tests/production/run.py", "tests/production/policy.py",
+        "tests/production/safety_plugin.py", "tests/production/pytest.ini", "tests/production/requirements.txt",
     )
     for name in required:
         if not (ROOT / name).is_file():
@@ -79,12 +81,12 @@ def validate(ci=False):
         import yaml
         from deployment_policy import PACKAGE_RULE, RULES
         pipeline = yaml.safe_load((ROOT / ".gitlab-ci.yml").read_text())
-        if pipeline["stages"] != ["validate", "test", "package", "deploy"]:
+        if pipeline["stages"] != ["validate", "test", "package", "deploy", "acceptance"]:
             raise ValueError("Unexpected CI/CD stage sequence")
         if pipeline["default"]["image"] != "python:3.13-slim" or pipeline["default"]["tags"] != ["docker"]:
             raise ValueError("Expected Python 3.13 image and docker runner tag")
         if set(pipeline) != {"stages", "variables", "default", "validate", "regression", "package_release", ".cd",
-                             "production_preflight", "bootstrap_production", "deploy_production"}:
+                             "production_preflight", "bootstrap_production", "deploy_production", "production_acceptance"}:
             raise ValueError("Unexpected pipeline job/configuration")
         if pipeline["variables"] != {"JARVIS_OPERATION": "deploy"}:
             raise ValueError("Only the non-secret deployment operation default belongs in YAML")
@@ -105,6 +107,21 @@ def validate(ci=False):
                 raise ValueError(f"Unsafe production approval/branch rules: {name}")
         if any("environment" in pipeline[name] for name in ("validate", "regression", "package_release")):
             raise ValueError("CI jobs must not receive production-environment-scoped credentials")
+        acceptance = pipeline["production_acceptance"]
+        if (acceptance["extends"] != ".cd" or acceptance["stage"] != "acceptance"
+                or acceptance["rules"] != [{"if": RULES["deploy_production"], "when": "on_success"}, {"when": "never"}]
+                or acceptance["environment"]["name"] != "production"
+                or acceptance["script"] != ["python -B ci/deploy.py acceptance"]):
+            raise ValueError("Unsafe post-deployment production acceptance rules")
+        if {n["job"] for n in acceptance["needs"]} != {"deploy_production", "package_release", "validate", "regression"}:
+            raise ValueError("Acceptance must follow successful validated deployment")
+        if not next(n["artifacts"] for n in acceptance["needs"] if n["job"] == "deploy_production"):
+            raise ValueError("Acceptance must retrieve successful deployment evidence")
+        if pipeline["deploy_production"].get("artifacts") != {
+                "when": "on_success", "expire_in": "7 days", "paths": ["results/deployment.json"]}:
+            raise ValueError("Deployment must publish its successful release receipt")
+        if acceptance["artifacts"]["when"] != "always" or acceptance["artifacts"]["reports"]["junit"] != "results/production.xml":
+            raise ValueError("Production JUnit must be returned even on failure")
         reports = pipeline["regression"]["artifacts"]
         if reports["when"] != "always" or reports["reports"]["junit"] != "results/*.xml":
             raise ValueError("Always-upload JUnit reporting is required")

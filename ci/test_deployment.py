@@ -4,6 +4,7 @@ No application imports, network, subprocess execution, production reads/writes,
 real systemd, sudo, SSH or SQLite connections are permitted by this runner.
 """
 import argparse
+from contextlib import ExitStack
 import errno
 import hashlib
 import posixpath
@@ -13,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -37,6 +39,8 @@ readiness = load("cd_readiness_tests", ROOT / "deployment/readiness.py")
 import deploy as transport
 import package_release as package
 import deployment_policy as policy
+production_policy = load("production_acceptance_policy_tests", ROOT / "tests/production/policy.py")
+acceptance = load("production_acceptance_controller_tests", ROOT / "deployment/acceptance.py")
 
 
 class SafeTemporaryDirectory:
@@ -653,6 +657,302 @@ class CredentialPolicyTests(unittest.TestCase):
             self.assertNotIn("environment:", block)
         self.assertNotIn("JARVIS_SSH_PRIVATE_KEY:", text)
         self.assertNotIn("JARVIS_SSH_KNOWN_HOSTS:", text)
+
+
+class ProductionAcceptanceTests(unittest.TestCase):
+    def setUp(self):
+        self.scratch = SafeTemporaryDirectory(dir=SAFE_ROOT)
+        self.addCleanup(self.scratch.cleanup)
+        self.base = Path(self.scratch.name)
+        self.sha = "a" * 40
+        self.release = self.base / "releases" / "validated"
+        (self.release / "app").mkdir(parents=True)
+        (self.release / "app/main.py").write_bytes(b"# validated source")
+        self.hashes = {"app/main.py": hashlib.sha256(b"# validated source").hexdigest()}
+        (self.release / "RELEASE.json").write_text(json.dumps({"commit": self.sha, "files": self.hashes}))
+        current = Mock(spec=Path)
+        current.is_symlink.return_value = True
+        current.resolve.return_value = self.release
+        self.deployment = Mock(CURRENT=current, RELEASES=self.release.parent)
+        self.endpoints = {"ha": "http://ha.invalid:8123", "music": "http://music.invalid:8095",
+                          "ollama": "http://127.0.0.1:11434", "jarvis": "http://127.0.0.1:8000"}
+
+    def test_active_commit_and_files_must_match_validated_bundle(self):
+        self.assertEqual(acceptance.active_release(self.deployment, self.sha, self.hashes), self.release)
+        with self.assertRaisesRegex(RuntimeError, "pipeline commit"):
+            acceptance.active_release(self.deployment, "b" * 40, self.hashes)
+        (self.release / "app/main.py").write_bytes(b"unreviewed edit")
+        with self.assertRaisesRegex(RuntimeError, "integrity failure"):
+            acceptance.active_release(self.deployment, self.sha, self.hashes)
+
+    def test_extra_application_module_is_rejected(self):
+        (self.release / "app/extra.py").write_bytes(b"unexpected")
+        with self.assertRaisesRegex(RuntimeError, "module set"):
+            acceptance.active_release(self.deployment, self.sha, self.hashes)
+
+    def test_same_commit_in_another_release_is_not_deployment_evidence(self):
+        with self.assertRaisesRegex(RuntimeError, "deployment instance"):
+            acceptance.active_release(self.deployment, self.sha, self.hashes, str(self.base / "releases/other"))
+        self.assertEqual(acceptance.active_release(self.deployment, self.sha, self.hashes, str(self.release)), self.release)
+
+    def test_deployment_receipt_rejects_failed_missing_and_unrelated_jobs(self):
+        release = "/opt/jarvis-releases/" + self.sha + "-release"
+        receipt = {"commit": self.sha, "pipeline": "42", "job": "51", "status": "success", "release": release}
+        self.assertEqual(transport.deployment_receipt(receipt, self.sha, "42"), release)
+        for update in ({"status": "failed"}, {"status": "skipped"}, {"pipeline": "41"},
+                       {"commit": "b" * 40}, {"job": ""}, {"release": "/var/lib/jarvis-core"}):
+            with self.subTest(update=update), self.assertRaises(RuntimeError):
+                transport.deployment_receipt(receipt | update, self.sha, "42")
+        with self.assertRaises(RuntimeError):
+            transport.deployment_receipt({}, self.sha, "42")
+
+    def test_running_service_must_use_release_inode_identity_and_stable_pid(self):
+        info = self.release.stat()
+        valid = {"device": info.st_dev, "inode": info.st_ino, "pid": 42, "uid": 999, "gid": 991}
+        self.deployment.runtime_identity.return_value = (999, 991)
+        self.deployment.service_process.return_value = valid
+        self.assertEqual(acceptance.running_release(self.deployment, self.release), 42)
+        for update in ({"inode": info.st_ino + 1}, {"uid": 0}, {"gid": 0}):
+            self.deployment.service_process.return_value = valid | update
+            with self.assertRaisesRegex(RuntimeError, "identity or release"):
+                acceptance.running_release(self.deployment, self.release)
+        self.deployment.service_process.side_effect = [valid, valid | {"pid": 43}]
+        with self.assertRaisesRegex(RuntimeError, "MainPID changed"):
+            acceptance.running_release(self.deployment, self.release)
+
+    def test_junit_rejects_skipped_empty_failed_and_nonzero_execution(self):
+        produced, report = self.base / "produced.xml", self.base / "report.xml"
+        produced.write_text('<testsuite tests="1"><testcase name="ok"/></testsuite>')
+        self.assertEqual(acceptance.collect_report(produced, report, 0), 0)
+        for xml, result in [
+                ('<testsuite tests="1" skipped="1"><testcase name="skip"><skipped/></testcase></testsuite>', 0),
+                ('<testsuite tests="0"/>', 0),
+                ('<testsuite tests="1" failures="1"><testcase name="failed"><failure/></testcase></testsuite>', 0),
+                ('<testsuite tests="1"><testcase name="ok"/></testsuite>', 1),
+                ('<testsuite tests="2"><testcase name="incomplete"/></testsuite>', 0)]:
+            with self.subTest(xml=xml, result=result):
+                produced.write_text(xml)
+                self.assertEqual(acceptance.collect_report(produced, report, result), 1)
+                self.assertTrue(list(ET.parse(report).getroot().iter("failure")))
+
+    def test_late_verification_failure_preserves_test_results(self):
+        report = self.base / "report.xml"
+        report.write_text('<testsuite tests="1" failures="1"><testcase name="original"><failure>sanitized</failure></testcase></testsuite>')
+        acceptance.failure_report(report, preserve=True)
+        cases = list(ET.parse(report).getroot().iter("testcase"))
+        self.assertEqual([c.get("name") for c in cases], ["original", "acceptance_execution"])
+
+    def test_cleanup_checks_only_transient_unit_and_requires_no_process(self):
+        unit = "jarvis-acceptance-fixture"
+        def response(args, **kwargs):
+            if args[1] == "show":
+                return Mock(stdout="LoadState=loaded\nActiveState=inactive\nMainPID=0\n", returncode=0)
+            return Mock(returncode=0)
+        with patch.object(acceptance.subprocess, "run", side_effect=response) as commands:
+            acceptance.stop_test_unit(self.deployment, unit)
+            self.assertTrue(all(call.args[0][2] == unit for call in commands.call_args_list))
+            self.assertFalse(any("jarvis-core" in arg for call in commands.call_args_list for arg in call.args[0]))
+        with patch.object(acceptance.subprocess, "run", side_effect=[Mock(returncode=0), Mock(stdout="LoadState=loaded\nActiveState=active\nMainPID=123", returncode=0)]):
+            with self.assertRaises(acceptance.AcceptanceUnitStillRunning):
+                acceptance.stop_test_unit(self.deployment, unit)
+        with patch.object(acceptance.subprocess, "run", side_effect=[Mock(returncode=5), Mock(stdout="LoadState=not-found\nActiveState=inactive\nMainPID=0", returncode=1)]):
+            acceptance.stop_test_unit(self.deployment, unit)
+        with patch.object(acceptance.subprocess, "run", side_effect=[Mock(returncode=5), Mock(stdout="", returncode=1)]):
+            with self.assertRaises(acceptance.AcceptanceUnitStillRunning):
+                acceptance.stop_test_unit(self.deployment, unit)
+
+    def test_acceptance_holds_host_lock_and_retains_junit_on_late_identity_failure(self):
+        workspace = self.base / "acceptance-work"
+        (workspace / "results").mkdir(parents=True)
+        archive = self.base / "tests.tar.gz"
+        lock = MagicMock()
+        self.deployment.host_lock.return_value = lock
+        def execute(*args):
+            lock.__enter__.assert_called_once()
+            lock.__exit__.assert_not_called()
+            (workspace / "results/production.xml").write_text(
+                '<testsuite tests="1"><testcase name="completed_test"/></testsuite>')
+            return 0
+        with patch.object(acceptance.sys, "argv", ["acceptance.py", self.sha, str(archive), "digest", str(self.release)]), \
+                patch.object(acceptance.sys, "version_info", (3, 13)), \
+                patch.object(acceptance.os, "geteuid", return_value=0, create=True), \
+                patch.object(acceptance, "controller", return_value=self.deployment), \
+                patch.object(acceptance.tempfile, "mkdtemp", return_value=str(workspace)), \
+                patch.object(acceptance, "unpack", return_value={"application_files": self.hashes}), \
+                patch.object(acceptance, "execute", side_effect=execute), \
+                patch.object(acceptance, "running_release", side_effect=[42, 43]), \
+                patch.object(acceptance.shutil, "rmtree") as cleanup:
+            self.assertEqual(acceptance.main(), 1)
+            # Never delete an arbitrary supplied directory, application release or state.
+            cleanup.assert_not_called()
+        lock.__exit__.assert_called_once()
+        report = ET.parse(self.base / "production.xml").getroot()
+        self.assertIn("completed_test", [case.get("name") for case in report.iter("testcase")])
+        self.assertTrue(list(report.iter("failure")))
+
+    def test_failed_acceptance_fetches_junit_and_fetch_failure_retains_remote_report(self):
+        artifact = self.base / "release-artifacts"
+        artifact.mkdir()
+        sources = {"runner.py": b"# runner"}
+        controllers = {"acceptance.py": b"# acceptance", "remote.py": b"# remote"}
+        with patch.object(package, "test_files", return_value=dict(sources)), \
+                patch.object(package, "release_files", return_value={"app/main.py": b"# validated source"}), \
+                patch.object(package, "git", return_value=controllers["acceptance.py"]):
+            identity = package.write_test_bundle(artifact, self.sha)
+        (artifact / "remote.py").write_bytes(controllers["remote.py"])
+        identity.update(commit=self.sha, controller_sha256=hashlib.sha256(controllers["remote.py"]).hexdigest())
+        (artifact / "identity.json").write_text(json.dumps(identity))
+        (self.base / "results").mkdir()
+        release = "/opt/jarvis-releases/" + self.sha + "-receipt"
+        (self.base / "results/deployment.json").write_text(json.dumps(
+            {"commit": self.sha, "pipeline": "42", "job": "51", "status": "success", "release": release}))
+        (self.base / "key").write_text("dummy offline fixture")
+        (self.base / "hosts").write_text("dummy offline fixture")
+        environment = {"CI_COMMIT_BRANCH": "main", "CI_COMMIT_REF_PROTECTED": "true", "CI_ENVIRONMENT_NAME": "production",
+                       "CI_PIPELINE_SOURCE": "push", "JARVIS_OPERATION": "deploy", "CI_PIPELINE_ID": "42",
+                       "JARVIS_SSH_PRIVATE_KEY": str(self.base / "key"), "JARVIS_SSH_KNOWN_HOSTS": str(self.base / "hosts")}
+        for fetch_failure in (False, True):
+            calls = []
+            def command(args, **kwargs):
+                calls.append(args)
+                if args[0] == "ssh" and "sudo -n" in args[-1]:
+                    self.assertTrue(args[-1].endswith(release))
+                    return subprocess.CompletedProcess(args, 1)
+                if args[0] == "scp" and args[-2].endswith("/production.xml"):
+                    if fetch_failure:
+                        raise OSError("mock fetch failure")
+                    acceptance.failure_report(Path(args[-1]))
+                return subprocess.CompletedProcess(args, 0)
+            with self.subTest(fetch_failure=fetch_failure), ExitStack() as patches:
+                patches.enter_context(patch.dict(transport.os.environ, environment, clear=True))
+                patches.enter_context(patch.object(transport, "ROOT", self.base))
+                patches.enter_context(patch.object(transport, "validated_sha", return_value=self.sha))
+                patches.enter_context(patch.object(transport, "git", side_effect=lambda *a: controllers[a[-1].split("/")[-1]]))
+                patches.enter_context(patch.object(transport, "test_files", return_value=sources))
+                patches.enter_context(patch.object(transport, "release_files", return_value={"app/main.py": b"# validated source"}))
+                patches.enter_context(patch.object(transport.tempfile, "TemporaryDirectory", side_effect=lambda **k: SafeTemporaryDirectory(dir=self.base)))
+                patches.enter_context(patch.object(transport.subprocess, "run", side_effect=command))
+                with self.assertRaises((subprocess.CalledProcessError, OSError)):
+                    transport.main("acceptance")
+            self.assertTrue(any(a[0] == "scp" and a[-2].endswith("/production.xml") for a in calls))
+            cleanup = calls[-1][-1]
+            self.assertEqual("/production.xml" in cleanup, not fetch_failure)
+            self.assertEqual("rmdir" in cleanup, not fetch_failure)
+
+    def test_exact_commit_test_bundle_retains_behavioural_source_without_approval(self):
+        source = {"tests/regression/test_qwen_live.py": b"# archived, never auto-collected",
+                  "tests/regression/test_context_live.py": b"# approved read-only source"}
+        with patch.object(package, "test_files", return_value=source), patch.object(package, "release_files", return_value={"app/main.py": b"# validated source"}), patch.object(package, "git", return_value=b"# validated acceptance controller"):
+            identity = package.write_test_bundle(self.base, self.sha)
+        self.assertEqual(identity["tests_archive_sha256"], hashlib.sha256((self.base / "tests.tar.gz").read_bytes()).hexdigest())
+        workspace = self.base / "tests-work"
+        workspace.mkdir()
+        manifest = acceptance.unpack(self.base / "tests.tar.gz", identity["tests_archive_sha256"], self.sha, workspace)
+        self.assertEqual(manifest["application_files"], self.hashes)
+        self.assertEqual((workspace / "tests/regression/test_qwen_live.py").read_bytes(), source["tests/regression/test_qwen_live.py"])
+        self.assertNotIn("test_qwen_live.py", production_policy.APPROVED)
+        self.assertNotIn("test_isolation_guards.py", production_policy.APPROVED)
+        self.assertEqual((self.release / "app/main.py").read_bytes(), b"# validated source")
+
+    def test_live_collection_guard_excludes_behavioural_and_unreviewed_before_import(self):
+        import ast
+        profile = self.base / "profile"
+        directory = profile / "tests/regression"
+        directory.mkdir(parents=True)
+        approved = directory / "test_context_live.py"
+        approved.write_text("import pytest\npytestmark = pytest.mark.live\n")
+        behavioural = directory / "test_qwen_live.py"
+        behavioural.write_text("raise RuntimeError('must never import')\n")
+        module = ast.parse((ROOT / "tests/production/safety_plugin.py").read_text())
+        function = next(n for n in module.body if isinstance(n, ast.FunctionDef) and n.name == "safe_module")
+        namespace = {"ROOT": profile, "APPROVED": production_policy.APPROVED, "Path": Path, "ast": ast}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "collection-guard", "exec"), namespace)
+        self.assertTrue(namespace["safe_module"](approved))
+        self.assertFalse(namespace["safe_module"](behavioural))
+        self.assertFalse(namespace["safe_module"](directory / "test_unreviewed.py"))
+        approved.write_text("import pytest\npytestmark = pytest.mark.behavioural\n")
+        self.assertFalse(namespace["safe_module"](approved))
+
+    def test_acceptance_bundle_cannot_write_application_files(self):
+        with patch.object(package, "test_files", return_value={"app/main.py": b"overwrite forbidden"}), patch.object(package, "release_files", return_value={"app/main.py": b"# validated source"}), patch.object(package, "git", return_value=b"# controller"):
+            identity = package.write_test_bundle(self.base, self.sha)
+        workspace = self.base / "unpack"
+        workspace.mkdir()
+        with self.assertRaisesRegex(RuntimeError, "Unsafe acceptance bundle"):
+            acceptance.unpack(self.base / "tests.tar.gz", identity["tests_archive_sha256"], self.sha, workspace)
+        self.assertEqual((self.release / "app/main.py").read_bytes(), b"# validated source")
+
+    def test_test_sources_are_read_from_commit_objects(self):
+        calls = []
+        def git(*arguments):
+            calls.append(arguments)
+            if arguments[0] == "ls-tree":
+                return b"tests/regression/test_context_live.py\ntests/regression/test_qwen_live.py\n"
+            return arguments[-1].encode()
+        with patch.object(package, "git", side_effect=git):
+            result = package.test_files(self.sha)
+        self.assertIn("production_safety.py", result)
+        self.assertTrue(all(call[1].startswith(self.sha + ":") for call in calls if call[0] == "show"))
+        self.assertFalse(any("HEAD" in call for call in calls))
+
+    def test_readonly_http_policy_blocks_actions_generation_and_other_hosts(self):
+        allowed = [("GET", "http://ha.invalid:8123/api/states", b""),
+                   ("GET", "http://127.0.0.1:11434/api/tags", b""),
+                   ("GET", "http://127.0.0.1:8000/observer/status", b""),
+                   ("POST", "http://music.invalid:8095/api", b'{"command":"music/genres/library_items","args":{"limit":1}}')]
+        denied = [("POST", "http://ha.invalid:8123/api/services/tts/speak", b"{}"),
+                  ("POST", "http://127.0.0.1:11434/api/chat", b"{}"),
+                  ("POST", "http://127.0.0.1:8000/request", b"{}"),
+                  ("GET", "http://unexpected.invalid/api/states", b""),
+                  ("POST", "http://music.invalid:8095/api", b'{"command":"players/play","args":{"limit":1}}')]
+        for method, url, payload in allowed:
+            self.assertTrue(production_policy.readonly_request(method, url, payload, self.endpoints))
+        for method, url, payload in denied:
+            self.assertFalse(production_policy.readonly_request(method, url, payload, self.endpoints))
+
+    def test_production_sqlite_requires_exact_readonly_uri(self):
+        workspace = self.base / "work"
+        self.assertTrue(production_policy.readonly_sqlite(production_policy.PRODUCTION_DATABASE, uri=True, workspace=workspace))
+        self.assertFalse(production_policy.readonly_sqlite(production_policy.PRODUCTION_DATABASE, uri=False, workspace=workspace))
+        self.assertFalse(production_policy.readonly_sqlite("/var/lib/jarvis-core/jarvis.db", uri=False, workspace=workspace))
+        self.assertFalse(production_policy.readonly_sqlite("file:/var/lib/jarvis-core/jarvis.db?mode=rw", uri=True, workspace=workspace))
+        self.assertTrue(production_policy.readonly_sqlite(workspace / "temporary.db", uri=False, workspace=workspace))
+
+    def test_five_behavioural_cases_are_excluded_before_collection(self):
+        import ast
+        tree = ast.parse((ROOT / "tests/regression/test_qwen_live.py").read_text())
+        functions = [n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name.startswith("test_")]
+        count = 0
+        for function in functions:
+            dimensions = [len(ast.literal_eval(d.args[1])) for d in function.decorator_list
+                          if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute) and d.func.attr == "parametrize"]
+            count += dimensions[0] if dimensions else 1
+        self.assertEqual(count, 5)
+        self.assertTrue({"test_qwen_live.py", "test_isolation_guards.py"}.isdisjoint(production_policy.APPROVED))
+
+    def test_acceptance_context_rejects_feature_mr_and_wrong_environment(self):
+        environment = {"CI_COMMIT_BRANCH": "main", "CI_COMMIT_REF_PROTECTED": "true",
+                       "CI_ENVIRONMENT_NAME": "production", "CI_PIPELINE_SOURCE": "push", "JARVIS_OPERATION": "deploy"}
+        policy.require_production_context(environment, "acceptance")
+        for values in ({"CI_COMMIT_BRANCH": "feature/test"}, {"CI_PIPELINE_SOURCE": "merge_request_event"}, {"CI_ENVIRONMENT_NAME": "review"}, {"JARVIS_OPERATION": "bootstrap"}):
+            with self.assertRaises(RuntimeError):
+                policy.require_production_context(environment | values, "acceptance")
+
+    def test_acceptance_job_waits_for_manual_success_and_shares_resource_group(self):
+        text = (ROOT / ".gitlab-ci.yml").read_text()
+        block = text.split("\nproduction_acceptance:\n", 1)[1]
+        self.assertIn("extends: .cd", block)
+        self.assertIn("job: deploy_production", block)
+        self.assertIn("when: on_success", block)
+        self.assertIn("junit: results/production.xml", block)
+        self.assertIn(f"- if: '{policy.RULES['deploy_production']}'", block)
+
+    def test_failure_report_is_generic_and_does_not_contain_live_details(self):
+        report = self.base / "result.xml"
+        acceptance.failure_report(report)
+        tree = ET.parse(report)
+        self.assertEqual(tree.getroot().get("failures"), "1")
+        self.assertNotIn("private-placeholder", report.read_text())
 
 
 class HarnessSafetyTests(unittest.TestCase):

@@ -40,6 +40,35 @@ def release_files(sha):
     return {name: git("show", f"{sha}:{name}") for name in sorted(paths)}
 
 
+def test_files(sha):
+    paths = git("ls-tree", "-r", "--name-only", sha, "tests/regression").decode().splitlines()
+    files = {name: git("show", f"{sha}:{name}") for name in paths if name.endswith(".py")}
+    mappings = {"production_safety.py": "tests/production/safety_plugin.py",
+                "acceptance_policy.py": "tests/production/policy.py",
+                "pytest.ini": "tests/production/pytest.ini", "requirements.txt": "tests/production/requirements.txt",
+                "runner.py": "tests/production/run.py",
+                "tests/regression/test_production_integrations.py": "tests/production/test_integrations.py"}
+    files.update({target: git("show", f"{sha}:{source}") for target, source in mappings.items()})
+    return files
+
+
+def write_test_bundle(output, sha):
+    files = test_files(sha)
+    manifest = {"commit": sha, "files": {name: hashlib.sha256(data).hexdigest() for name, data in files.items()},
+                "application_files": {name: hashlib.sha256(data).hexdigest() for name, data in release_files(sha).items()}}
+    files["TEST_RELEASE.json"] = (json.dumps(manifest, sort_keys=True) + "\n").encode()
+    archive = output / "tests.tar.gz"
+    with tarfile.open(archive, "w:gz") as bundle:
+        for name, data in sorted(files.items()):
+            entry = tarfile.TarInfo(name)
+            entry.size, entry.mode = len(data), 0o644
+            bundle.addfile(entry, io.BytesIO(data))
+    controller = git("show", f"{sha}:deployment/acceptance.py")
+    (output / "acceptance.py").write_bytes(controller)
+    return {"tests_archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+            "acceptance_controller_sha256": hashlib.sha256(controller).hexdigest()}
+
+
 def main():
     sha = validated_sha()
     files = release_files(sha)
@@ -64,6 +93,7 @@ def main():
     (output / "remote.py").write_bytes(controller)
     identity = {"commit": sha, "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
                 "controller_sha256": hashlib.sha256(controller).hexdigest()}
+    identity.update(write_test_bundle(output, sha))
     (output / "identity.json").write_text(json.dumps(identity, sort_keys=True) + "\n")
     print(f"Packaged exact validated commit {sha}; no working-tree files included")
 
