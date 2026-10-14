@@ -33,11 +33,25 @@ def deployment_receipt(value, sha, pipeline):
     return release
 
 
-def main(action):
+def transport_failure(error, diagnostics):
+    code = error.returncode if isinstance(error, subprocess.CalledProcessError) else None
+    name = type(error).__name__
+    if name not in {"CalledProcessError", "TimeoutExpired", "FileNotFoundError", "PermissionError", "RuntimeError", "OSError", "ValueError"}:
+        name = "Exception"
+    return json.dumps({"operation": diagnostics.get("operation", "transport-initialization"),
+                       "exception": name, "exit_code": code,
+                       "classification": "transport-or-remote-execution-failure",
+                       "tests_started": None, "junit_retrieved": diagnostics.get("junit_retrieved", False)}, sort_keys=True)
+
+
+def main(action, diagnostics=None):
+    diagnostics = diagnostics if diagnostics is not None else {}
+    diagnostics["operation"] = "production-context-validation"
     if action not in {"preflight", "bootstrap", "deploy", "acceptance"}:
         raise RuntimeError("Unknown operation")
     require_production_context(os.environ, action)
     sha = validated_sha()
+    diagnostics["operation"] = "commit-and-artifact-verification"
     # Refuse an old manual pipeline after main has moved; revalidate a fresh pipeline.
     latest = git("ls-remote", "origin", "refs/heads/main").decode().split() if action != "acceptance" else [sha]
     if not latest or latest[0] != sha:
@@ -94,6 +108,7 @@ def main(action):
         if remote_controller != git("show", f"{sha}:deployment/remote.py") or hashlib.sha256(remote_controller).hexdigest() != identity["controller_sha256"]:
             raise RuntimeError("Acceptance dependency controller differs from commit")
     private_key = Path(os.environ.get("JARVIS_SSH_PRIVATE_KEY", ""))
+    diagnostics["operation"] = "protected-ssh-credential-setup"
     known_hosts = Path(os.environ.get("JARVIS_SSH_KNOWN_HOSTS", ""))
     if not private_key.is_file() or not known_hosts.is_file():
         raise RuntimeError("Protected SSH key and verified known_hosts file variables are required")
@@ -117,10 +132,12 @@ def main(action):
         def ssh(command, check=True, capture=False):
             return subprocess.run(["ssh", *options, HOST, command], check=check,
                                   text=True, stdout=subprocess.PIPE if capture else None)
+        diagnostics["operation"] = "remote-upload-directory-creation"
         ssh(f"umask 077 && mkdir {shlex.quote(incoming)}")
         report_collected = not accepting
         try:
             sources = [str(controller), str(archive)] + ([str(artifact / "remote.py")] if accepting else [])
+            diagnostics["operation"] = "test-bundle-transfer" if accepting else "release-bundle-transfer"
             subprocess.run(["scp", *options, *sources, f"{HOST}:{incoming}/"], check=True)
             command = ["sudo", "-n", "/usr/bin/python3.13", "-B", f"{incoming}/{controller_name}"]
             command += [sha, f"{incoming}/{archive.name}", identity[archive_key]] if accepting else [action, sha, f"{incoming}/{archive.name}", identity[archive_key]]
@@ -128,6 +145,7 @@ def main(action):
                 command.append(expected_release)
             if action == "bootstrap":
                 command.append(APPROVAL)
+            diagnostics["operation"] = "remote-acceptance-controller" if accepting else "remote-deployment-controller"
             result = ssh(shlex.join(command), check=not accepting, capture=action == "deploy")
             if action == "deploy":
                 # Written only after the controller exits successfully, including health verification.
@@ -140,8 +158,11 @@ def main(action):
             if accepting:
                 results = ROOT / "results"
                 results.mkdir(exist_ok=True)
+                diagnostics["operation"] = "junit-retrieval"
                 subprocess.run(["scp", *options, f"{HOST}:{incoming}/production.xml", str(results / "production.xml")], check=True)
                 report_collected = True
+                diagnostics["junit_retrieved"] = True
+                diagnostics["operation"] = "remote-acceptance-exit-status"
                 result.check_returncode()
         finally:
             # Only the unique upload directory is removed, never any release or state.
@@ -161,8 +182,9 @@ if __name__ == "__main__":
     if sys.argv[1] != "acceptance":
         main(sys.argv[1])
     else:
+        diagnostics = {}
         try:
-            main("acceptance")
+            main("acceptance", diagnostics)
         except Exception as error:
             # Preserve fetched test failures; provide safe JUnit for transport/setup errors.
             import xml.etree.ElementTree as ET
@@ -170,7 +192,7 @@ if __name__ == "__main__":
             report.parent.mkdir(exist_ok=True)
             if not report.exists():
                 suite = ET.Element("testsuite", name="production-acceptance", tests="1", failures="1")
-                ET.SubElement(ET.SubElement(suite, "testcase", name="acceptance_transport"), "failure").text = "Acceptance transport/setup failed; live details withheld"
+                ET.SubElement(ET.SubElement(suite, "testcase", name="acceptance_transport"), "failure").text = transport_failure(error, diagnostics)
                 ET.ElementTree(suite).write(report, encoding="utf-8", xml_declaration=True)
-            print(f"Production acceptance failed ({type(error).__name__}); JUnit artifact retained", file=sys.stderr)
+            print("Production acceptance transport diagnostics: " + transport_failure(error, diagnostics), file=sys.stderr)
             raise SystemExit(1)

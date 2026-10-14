@@ -14,6 +14,81 @@ import uuid
 import xml.etree.ElementTree as ET
 
 
+class Diagnostics:
+    """Only fixed labels and numeric codes; never exception text or command output."""
+    def __init__(self):
+        self.operation = "controller-initialization"
+        self.failure = None
+        self.failure_error = None
+        self.secondary_failure = None
+        self.tests_started = False
+        self.pytest_started = False
+        self.junit_produced = False
+        self.runner_operation = "not-started"
+        self.runner_exception = "None"
+
+    def step(self, operation, function, *args, **kwargs):
+        self.operation = operation
+        try:
+            return function(*args, **kwargs)
+        except Exception as error:
+            self.record(error)
+            raise
+
+    def record(self, error):
+        if error is self.failure_error:
+            return
+        code = error.returncode if isinstance(error, subprocess.CalledProcessError) else None
+        if isinstance(error, subprocess.CalledProcessError):
+            kind = "subprocess-nonzero-exit"
+        elif isinstance(error, subprocess.TimeoutExpired):
+            kind = "operation-timeout"
+        elif isinstance(error, FileNotFoundError):
+            kind = "required-file-or-executable-missing"
+        elif isinstance(error, PermissionError):
+            kind = "permission-denied"
+        elif isinstance(error, RuntimeError):
+            kind = "identity-or-safety-check"
+        else:
+            kind = "operation-error"
+        name = type(error).__name__
+        if name not in {"CalledProcessError", "TimeoutExpired", "FileNotFoundError", "PermissionError",
+                        "RuntimeError", "AcceptanceUnitStillRunning", "ValueError", "ParseError", "OSError"}:
+            name = "Exception"
+        failure = {"operation": self.operation, "exception": name, "exit_code": code, "classification": kind}
+        if self.failure is None:
+            self.failure = failure
+            self.failure_error = error
+        elif failure != self.failure:
+            self.secondary_failure = failure
+
+    def runner_status(self, workspace):
+        if workspace is None:
+            return
+        self.junit_produced = (workspace / "results/production.xml").is_file()
+        try:
+            value = json.loads((workspace / "results/runner-status.json").read_text())
+            if not isinstance(value, dict):
+                return
+            for field in ("tests_started", "pytest_started"):
+                if isinstance(value.get(field), bool):
+                    setattr(self, field, value[field])
+            if value.get("operation") in {"runner-initialization", "runtime-verification", "pytest-import", "pytest-execution"}:
+                self.runner_operation = value["operation"]
+            if value.get("exception") in {"RuntimeError", "ImportError", "ModuleNotFoundError", "OSError", "PermissionError", "Exception"}:
+                self.runner_exception = value["exception"]
+        except (OSError, ValueError, TypeError):
+            pass
+
+    def message(self):
+        value = self.failure or {"operation": self.operation, "exception": "None", "exit_code": None,
+                                 "classification": "regression-results-rejected"}
+        return json.dumps(value | {"tests_started": self.tests_started, "pytest_started": self.pytest_started,
+                                  "junit_produced": self.junit_produced, "runner_operation": self.runner_operation,
+                                  "runner_exception": self.runner_exception,
+                                  "secondary_failure": self.secondary_failure}, sort_keys=True)
+
+
 def controller():
     spec = importlib.util.spec_from_file_location("validated_deployment", Path(__file__).with_name("remote.py"))
     module = importlib.util.module_from_spec(spec)
@@ -82,13 +157,24 @@ def unpack(archive, digest, sha, workspace):
     return manifest
 
 
-def failure_report(path, *, preserve=False):
+def failure_report(path, *, preserve=False, diagnostic=None):
     suite = ET.Element("testsuite", name="production-acceptance", tests="1", failures="1")
     ET.SubElement(ET.SubElement(suite, "testcase", name="acceptance_execution"), "failure").text = (
-        "Production acceptance failed before complete safe results were available; inspect through approved operations")
+        diagnostic or "Production acceptance failed before complete safe results were available; inspect through approved operations")
     if preserve and path.is_file():
         try:
             previous = ET.parse(path).getroot()
+            # Replace our existing fallback's message rather than duplicating its
+            # testcase ID: GitLab can keep only the first duplicate testcase.
+            for existing in previous.iter("testsuite"):
+                if existing.get("name") == "production-acceptance":
+                    for case in existing.findall("testcase"):
+                        failure = case.find("failure")
+                        if case.get("name") == "acceptance_execution" and failure is not None:
+                            if diagnostic is not None:
+                                failure.text = diagnostic
+                            ET.ElementTree(previous).write(path, encoding="utf-8", xml_declaration=True)
+                            return
             root = ET.Element("testsuites")
             root.extend(list(previous) if previous.tag == "testsuites" else [previous])
             root.append(suite)
@@ -140,16 +226,25 @@ def stop_test_unit(deployment, unit):
         raise AcceptanceUnitStillRunning("Acceptance unit termination is unverified; scratch retained") from error
 
 
-def execute(deployment, workspace, release, sha):
+def execute(deployment, workspace, release, sha, diagnostics=None):
+    diagnostics = diagnostics or Diagnostics()
     python = workspace / ".venv/bin/python"
-    deployment.run("/usr/bin/python3.13", "-m", "venv", str(workspace / ".venv"))
-    subprocess.run([str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir",
+    diagnostics.step("test-venv-creation", subprocess.run,
+                     ["/usr/bin/python3.13", "-m", "venv", str(workspace / ".venv")],
+                     check=True, timeout=120, env=deployment.CLEAN_ENV,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    diagnostics.step("test-dependency-installation", subprocess.run,
+                   [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir",
                     "-r", str(workspace / "requirements.txt")], check=True, timeout=300,
                    env=deployment.CLEAN_ENV, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    runtime_site = deployment.run(str(release / ".venv/bin/python"), "-I", "-B", "-c",
-                                  "import sysconfig; print(sysconfig.get_path('purelib'))", capture=True).strip()
+    runtime_site = diagnostics.step("active-runtime-inspection", subprocess.run,
+                                  [str(release / ".venv/bin/python"), "-I", "-B", "-c",
+                                   "import sysconfig; print(sysconfig.get_path('purelib'))"],
+                                  check=True, timeout=120, env=deployment.CLEAN_ENV, text=True,
+                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.strip()
     if not Path(runtime_site).resolve().is_relative_to(release / ".venv"):
         raise RuntimeError("Unexpected active runtime dependency path")
+    diagnostics.operation = "scratch-permission-setup"
     uid, gid = deployment.runtime_identity()
     os.chown(workspace, 0, gid)
     workspace.chmod(0o750)
@@ -177,11 +272,16 @@ def execute(deployment, workspace, release, sha):
                "--setenv=PYTEST_DISABLE_PLUGIN_AUTOLOAD=1", "--setenv=PYTHONDONTWRITEBYTECODE=1",
                str(python), "-I", "-B", str(workspace / "runner.py"), sha, str(release), runtime_site]
     try:
-        return subprocess.run(command, check=False, timeout=660, env=deployment.CLEAN_ENV,
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+        diagnostics.tests_started = diagnostics.pytest_started = None  # Unknown until the runner's marker is read.
+        result = diagnostics.step("transient-unit-execution", subprocess.run,
+                                  command, check=False, timeout=660, env=deployment.CLEAN_ENV,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if result.returncode:
+            diagnostics.record(subprocess.CalledProcessError(result.returncode, "<withheld>"))
+        return result.returncode
     finally:
         # This is the acceptance transient unit, never jarvis-core.service.
-        stop_test_unit(deployment, unit)
+        diagnostics.step("transient-unit-cleanup", stop_test_unit, deployment, unit)
 
 
 def main():
@@ -191,27 +291,40 @@ def main():
     failure_report(report)  # Safe fallback exists even if setup/preflight later fails.
     workspace = None
     retain_workspace = False
+    diagnostics = Diagnostics()
     try:
         if os.geteuid() != 0 or sys.version_info[:2] != (3, 13) or not re.fullmatch(r"[0-9a-f]{40}", sha):
             raise RuntimeError("Acceptance requires approved root controller/Python 3.13/commit identity")
-        deployment = controller()
+        deployment = diagnostics.step("deployment-controller-import", controller)
+        diagnostics.operation = "host-lock"
         with deployment.host_lock():
-            deployment.preflight()
+            diagnostics.step("read-only-preflight", deployment.preflight)
+            diagnostics.operation = "scratch-creation"
             workspace = Path(tempfile.mkdtemp(prefix="jarvis-acceptance-", dir="/var/tmp"))
-            manifest = unpack(archive, digest, sha, workspace)
-            release = active_release(deployment, sha, manifest["application_files"], expected_release)
-            pid = running_release(deployment, release)
-            result = execute(deployment, workspace, release, sha)
+            manifest = diagnostics.step("test-bundle-verification", unpack, archive, digest, sha, workspace)
+            release = diagnostics.step("active-release-verification", active_release, deployment, sha, manifest["application_files"], expected_release)
+            pid = diagnostics.step("running-service-verification", running_release, deployment, release)
+            result = execute(deployment, workspace, release, sha, diagnostics)
+            diagnostics.runner_status(workspace)
             produced = workspace / "results/production.xml"
-            result = collect_report(produced, report, result)
-            active_release(deployment, sha, manifest["application_files"], expected_release)
+            result = diagnostics.step("junit-result-validation", collect_report, produced, report, result)
+            if result and diagnostics.failure is None:
+                diagnostics.failure = {"operation": "junit-result-validation", "exception": "None", "exit_code": None,
+                                       "classification": "regression-results-rejected"}
+            diagnostics.step("final-release-verification", active_release, deployment, sha, manifest["application_files"], expected_release)
+            diagnostics.operation = "final-service-verification"
             if running_release(deployment, release) != pid:
                 raise RuntimeError("Running application restarted during acceptance")
             report.chmod(0o644)  # Sanitized XML readable by ansible for scp.
+            if result:
+                failure_report(report, preserve=True, diagnostic=diagnostics.message())
+                print("Production acceptance diagnostics: " + diagnostics.message(), file=sys.stderr)
             return 0 if result == 0 else 1
     except Exception as error:
         # No raw live payloads, config contents, stdout or tracebacks reach GitLab.
-        print(f"Production acceptance failed ({type(error).__name__}); sanitized JUnit report available", file=sys.stderr)
+        diagnostics.record(error)
+        diagnostics.runner_status(workspace)
+        print("Production acceptance diagnostics: " + diagnostics.message(), file=sys.stderr)
         retain_workspace = isinstance(error, AcceptanceUnitStillRunning)
         if retain_workspace and workspace is not None:
             print(f"Acceptance scratch retained for approved inspection: {workspace}", file=sys.stderr)
@@ -220,7 +333,7 @@ def main():
                 collect_report(workspace / "results/production.xml", report, 1)
             except (ET.ParseError, OSError, ValueError):
                 pass
-        failure_report(report, preserve=True)
+        failure_report(report, preserve=True, diagnostic=diagnostics.message())
         report.chmod(0o644)
         return 1
     finally:
@@ -229,10 +342,12 @@ def main():
             if workspace.parent == Path("/var/tmp") and workspace.name.startswith("jarvis-acceptance-"):
                 try:
                     shutil.rmtree(workspace)
-                except OSError:
-                    failure_report(report, preserve=True)
+                except OSError as error:
+                    diagnostics.operation = "scratch-cleanup"
+                    diagnostics.record(error)
+                    failure_report(report, preserve=True, diagnostic=diagnostics.message())
                     report.chmod(0o644)
-                    print("Acceptance scratch cleanup failed; operator cleanup required", file=sys.stderr)
+                    print("Production acceptance cleanup diagnostics: " + diagnostics.message(), file=sys.stderr)
                     return 1
 
 

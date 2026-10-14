@@ -1,5 +1,6 @@
 """Explicit production profile: preserved real settings, read-only external access."""
 import ast
+import json
 import importlib.abc
 import os
 from pathlib import Path
@@ -94,6 +95,13 @@ def pytest_collection_modifyitems(items):
             raise pytest.UsageError("Unsafe acceptance test reached collection")
     if {Path(item.path).name for item in items} != APPROVED:
         raise pytest.UsageError("Acceptance did not collect every approved module")
+
+
+def pytest_runtest_logstart(nodeid, location):
+    status = ROOT / "results/runner-status.json"
+    value = json.loads(status.read_text())
+    value["tests_started"] = True
+    status.write_text(json.dumps(value, sort_keys=True))
 
 
 @pytest.fixture(autouse=True)

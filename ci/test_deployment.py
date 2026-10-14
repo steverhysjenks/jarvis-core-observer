@@ -41,6 +41,7 @@ import package_release as package
 import deployment_policy as policy
 production_policy = load("production_acceptance_policy_tests", ROOT / "tests/production/policy.py")
 acceptance = load("production_acceptance_controller_tests", ROOT / "deployment/acceptance.py")
+production_runner = load("production_runner_diagnostic_tests", ROOT / "tests/production/run.py")
 
 
 class SafeTemporaryDirectory:
@@ -676,6 +677,131 @@ class ProductionAcceptanceTests(unittest.TestCase):
         self.deployment = Mock(CURRENT=current, RELEASES=self.release.parent)
         self.endpoints = {"ha": "http://ha.invalid:8123", "music": "http://music.invalid:8095",
                           "ollama": "http://127.0.0.1:11434", "jarvis": "http://127.0.0.1:8000"}
+
+    def test_setup_subprocess_failures_report_stage_exit_code_without_output(self):
+        stages = ["test-venv-creation", "test-dependency-installation", "active-runtime-inspection"]
+        for index, stage in enumerate(stages):
+            diagnostics = acceptance.Diagnostics()
+            error = subprocess.CalledProcessError(7, ["secret-placeholder"], output="secret-placeholder", stderr="secret-placeholder")
+            responses = [subprocess.CompletedProcess([], 0) for _ in range(index)] + [error]
+            with self.subTest(stage=stage), patch.object(acceptance.subprocess, "run", side_effect=responses) as commands:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    acceptance.execute(self.deployment, self.base, self.release, self.sha, diagnostics)
+                value = json.loads(diagnostics.message())
+                self.assertEqual(value["operation"], stage)
+                self.assertEqual(value["exit_code"], 7)
+                self.assertEqual(value["exception"], "CalledProcessError")
+                self.assertFalse(value["tests_started"])
+                self.assertFalse(value["junit_produced"])
+                self.assertNotIn("secret-placeholder", diagnostics.message())
+                self.assertTrue(all(c.kwargs["stderr"] == subprocess.DEVNULL for c in commands.call_args_list))
+
+    def test_transient_launch_failure_is_not_claimed_as_started_tests(self):
+        workspace = self.base / "launch"
+        workspace.mkdir()
+        diagnostics = acceptance.Diagnostics()
+        responses = [subprocess.CompletedProcess([], 0), subprocess.CompletedProcess([], 0),
+                     subprocess.CompletedProcess([], 0, stdout=str(self.release / ".venv/lib")),
+                     subprocess.CompletedProcess([], 203)]
+        self.deployment.runtime_identity.return_value = (999, 991)
+        self.deployment.CLEAN_ENV = {}
+        with patch.object(acceptance.subprocess, "run", side_effect=responses), \
+                patch.object(acceptance.os, "chown", create=True), \
+                patch.object(acceptance, "stop_test_unit") as stop:
+            self.assertEqual(acceptance.execute(self.deployment, workspace, self.release, self.sha, diagnostics), 203)
+            stop.assert_called_once()
+        diagnostics.runner_status(workspace)
+        value = json.loads(diagnostics.message())
+        self.assertEqual(value["operation"], "transient-unit-execution")
+        self.assertEqual(value["exit_code"], 203)
+        self.assertIsNone(value["tests_started"])
+        self.assertEqual(value["runner_operation"], "not-started")
+        self.assertFalse(value["junit_produced"])
+
+    def test_timeout_classification_and_runner_markers_are_sanitized(self):
+        diagnostics = acceptance.Diagnostics()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            diagnostics.step("test-dependency-installation", Mock(side_effect=subprocess.TimeoutExpired("secret-placeholder", 300, output="secret-placeholder")))
+        self.assertEqual(json.loads(diagnostics.message())["classification"], "operation-timeout")
+        (self.base / "results").mkdir()
+        marker = self.base / "results/runner-status.json"
+        marker.write_text(json.dumps({"operation": "secret-placeholder", "exception": "secret-placeholder",
+                                      "tests_started": True, "pytest_started": True, "payload": "secret-placeholder"}))
+        diagnostics.runner_status(self.base)
+        self.assertTrue(json.loads(diagnostics.message())["tests_started"])
+        self.assertNotIn("secret-placeholder", diagnostics.message())
+        marker.write_text(json.dumps({"operation": "pytest-import", "exception": "ModuleNotFoundError",
+                                      "tests_started": False, "pytest_started": False}))
+        diagnostics.runner_status(self.base)
+        self.assertEqual(json.loads(diagnostics.message())["runner_operation"], "pytest-import")
+        self.assertEqual(json.loads(diagnostics.message())["runner_exception"], "ModuleNotFoundError")
+
+    def test_transport_diagnostics_do_not_confuse_remote_exit_with_test_failure(self):
+        value = json.loads(transport.transport_failure(
+            subprocess.CalledProcessError(1, "secret-placeholder", stderr="secret-placeholder"),
+            {"operation": "remote-acceptance-exit-status", "junit_retrieved": True}))
+        self.assertEqual(value["operation"], "remote-acceptance-exit-status")
+        self.assertEqual(value["exit_code"], 1)
+        self.assertTrue(value["junit_retrieved"])
+        self.assertIsNone(value["tests_started"])
+        self.assertNotIn("secret-placeholder", json.dumps(value))
+
+    def test_cleanup_does_not_relabel_original_failure_and_reports_secondary_failure(self):
+        diagnostics = acceptance.Diagnostics()
+        original = subprocess.TimeoutExpired("secret-placeholder", 660)
+        with self.assertRaises(subprocess.TimeoutExpired):
+            diagnostics.step("transient-unit-execution", Mock(side_effect=original))
+        diagnostics.step("transient-unit-cleanup", Mock(return_value=None))
+        diagnostics.record(original)
+        value = json.loads(diagnostics.message())
+        self.assertEqual(value["operation"], "transient-unit-execution")
+        self.assertIsNone(value["secondary_failure"])
+        with self.assertRaises(acceptance.AcceptanceUnitStillRunning):
+            diagnostics.step("transient-unit-cleanup", Mock(side_effect=acceptance.AcceptanceUnitStillRunning("secret-placeholder")))
+        value = json.loads(diagnostics.message())
+        self.assertEqual(value["secondary_failure"]["operation"], "transient-unit-cleanup")
+        self.assertNotIn("secret-placeholder", diagnostics.message())
+
+    def test_controller_fallback_junit_contains_safe_setup_diagnostics(self):
+        workspace = self.base / "setup-failure"
+        workspace.mkdir()
+        self.deployment.host_lock.return_value = MagicMock()
+        self.deployment.CLEAN_ENV = {}
+        with patch.object(acceptance.sys, "argv", ["acceptance.py", self.sha, str(self.base / "tests.tar.gz"), "digest", str(self.release)]), \
+                patch.object(acceptance.sys, "version_info", (3, 13)), \
+                patch.object(acceptance.os, "geteuid", return_value=0, create=True), \
+                patch.object(acceptance, "controller", return_value=self.deployment), \
+                patch.object(acceptance.tempfile, "mkdtemp", return_value=str(workspace)), \
+                patch.object(acceptance, "unpack", return_value={"application_files": self.hashes}), \
+                patch.object(acceptance, "running_release", return_value=42), \
+                patch.object(acceptance.subprocess, "run", side_effect=[subprocess.CompletedProcess([], 0), subprocess.CalledProcessError(1, "secret-placeholder", stderr="secret-placeholder")]):
+            self.assertEqual(acceptance.main(), 1)
+        report = (self.base / "production.xml").read_text()
+        self.assertIn("test-dependency-installation", report)
+        self.assertIn("CalledProcessError", report)
+        self.assertIn('"tests_started": false', report)
+        self.assertNotIn("secret-placeholder", report)
+        cases = list(ET.parse(self.base / "production.xml").getroot().iter("testcase"))
+        self.assertEqual(len(cases), 1)
+        self.assertIn("test-dependency-installation", cases[0].find("failure").text)
+
+    def test_runner_failure_and_first_test_marker_do_not_record_secrets(self):
+        import ast
+        (self.base / "results").mkdir()
+        status = {"operation": "pytest-import", "tests_started": False, "pytest_started": False}
+        with patch.object(production_runner, "__file__", str(self.base / "runner.py")), \
+                patch.object(production_runner, "STATUS", status), \
+                patch.object(production_runner, "main", side_effect=ModuleNotFoundError("secret-placeholder")):
+            self.assertEqual(production_runner.entrypoint(), 1)
+        marker = self.base / "results/runner-status.json"
+        self.assertEqual(json.loads(marker.read_text())["exception"], "ModuleNotFoundError")
+        tree = ast.parse((ROOT / "tests/production/safety_plugin.py").read_text())
+        function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "pytest_runtest_logstart")
+        namespace = {"ROOT": self.base, "json": json}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "safe-start-marker", "exec"), namespace)
+        namespace["pytest_runtest_logstart"]("secret-placeholder", ("secret-placeholder", 1, "secret-placeholder"))
+        self.assertTrue(json.loads(marker.read_text())["tests_started"])
+        self.assertNotIn("secret-placeholder", marker.read_text())
 
     def test_active_commit_and_files_must_match_validated_bundle(self):
         self.assertEqual(acceptance.active_release(self.deployment, self.sha, self.hashes), self.release)
