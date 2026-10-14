@@ -718,6 +718,59 @@ class ProductionAcceptanceTests(unittest.TestCase):
         self.assertEqual(value["runner_operation"], "not-started")
         self.assertFalse(value["junit_produced"])
 
+    def test_acceptance_sandbox_omits_private_tmp_and_keeps_mandatory_restrictions(self):
+        workspace = self.base / "sandbox"
+        workspace.mkdir()
+        self.deployment.runtime_identity.return_value = (999, 991)
+        self.deployment.CLEAN_ENV = {}
+        responses = [subprocess.CompletedProcess([], 0), subprocess.CompletedProcess([], 0),
+                     subprocess.CompletedProcess([], 0, stdout=str(self.release / ".venv/lib")),
+                     subprocess.CompletedProcess([], 0)]
+        with patch.object(acceptance.subprocess, "run", side_effect=responses) as commands, \
+                patch.object(acceptance.os, "chown", create=True), patch.object(acceptance, "stop_test_unit"):
+            self.assertEqual(acceptance.execute(self.deployment, workspace, self.release, self.sha), 0)
+        launch = commands.call_args_list[-1]
+        command = launch.args[0]
+        self.assertEqual(command[0], "systemd-run")
+        self.assertFalse(any("PrivateTmp=" in argument for argument in command))
+        for restriction in ("User=jarvis", "Group=jarvis", "NoNewPrivileges=yes", "ProtectSystem=strict",
+                            "ProtectHome=yes", "RuntimeMaxSec=600",
+                            f"ReadWritePaths={workspace / 'work'} {workspace / 'results'}",
+                            f"EnvironmentFile={self.deployment.ENVIRONMENT}"):
+            self.assertIn("--property=" + restriction, command)
+        for name in ("HOME", "TMPDIR", "TMP", "TEMP"):
+            self.assertIn(f"--setenv={name}={workspace / 'work'}", command)
+        self.assertEqual(launch.kwargs["stdout"], subprocess.DEVNULL)
+        self.assertEqual(launch.kwargs["stderr"], subprocess.DEVNULL)
+
+    def test_acceptance_tempfiles_override_inherited_and_cached_locations(self):
+        work = self.base / "work"
+        work.mkdir()
+        with patch.dict(production_runner.os.environ, {"TMPDIR": "unused", "TMP": "unused", "TEMP": "unused"}), \
+                patch.object(production_runner.tempfile, "tempdir", "unused"):
+            production_runner.configure_temporary_storage(self.base)
+            for name in ("TMPDIR", "TMP", "TEMP"):
+                self.assertEqual(os.environ[name], str(work))
+            with tempfile.TemporaryFile() as temporary:
+                temporary.write(b"offline fixture")
+            self.assertEqual(Path(tempfile.gettempdir()), work)
+        with self.assertRaises(RuntimeError):
+            production_runner.configure_temporary_storage(self.base / "missing")
+
+    def test_production_pytest_basetemp_is_inside_dedicated_workspace(self):
+        import ast
+        tree = ast.parse((ROOT / "tests/production/safety_plugin.py").read_text())
+        function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "pytest_configure")
+        # Execute the actual configuration prelude without importing the application.
+        first_import = next(i for i, n in enumerate(function.body) if isinstance(n, ast.ImportFrom))
+        function.body = function.body[:first_import]
+        namespace = {"os": os, "Path": Path, "WORK": self.base / "work"}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "pytest-temp-config", "exec"), namespace)
+        config = Mock(args=[], option=Mock(basetemp="unused"))
+        with patch.dict(os.environ, {"JARVIS_ACCEPTANCE_COMMIT": self.sha}):
+            namespace["pytest_configure"](config)
+        self.assertEqual(Path(config.option.basetemp), self.base / "work/pytest")
+
     def test_timeout_classification_and_runner_markers_are_sanitized(self):
         diagnostics = acceptance.Diagnostics()
         with self.assertRaises(subprocess.TimeoutExpired):

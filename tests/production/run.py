@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 
 STATUS = {"operation": "runner-initialization", "tests_started": False, "pytest_started": False}
 
@@ -11,6 +12,16 @@ def write_status():
     # Fixed labels only: no config, exception messages, node IDs or live payloads.
     path = Path(__file__).resolve().parent / "results/runner-status.json"
     path.write_text(json.dumps(STATUS, sort_keys=True))
+
+
+def configure_temporary_storage(root):
+    work = root / "work"
+    if not work.is_dir() or work.is_symlink():
+        raise RuntimeError("Acceptance requires its dedicated temporary workspace")
+    # Override inherited service settings and any cached tempfile default before pytest.
+    for name in ("TMPDIR", "TMP", "TEMP"):
+        os.environ[name] = str(work)
+    tempfile.tempdir = str(work)
 
 
 def main():
@@ -25,6 +36,7 @@ def main():
     manifest = json.loads((root / "TEST_RELEASE.json").read_text())
     if manifest["commit"] != commit or json.loads((Path(release) / "RELEASE.json").read_text())["commit"] != commit:
         raise RuntimeError("Acceptance/application commit mismatch")
+    configure_temporary_storage(root)
     for name in ("PYTEST_ADDOPTS", "PYTHONPATH", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
         os.environ.pop(name, None)
     os.environ.update({"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTHONDONTWRITEBYTECODE": "1",

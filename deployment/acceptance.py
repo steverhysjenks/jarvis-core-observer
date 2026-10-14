@@ -265,10 +265,12 @@ def execute(deployment, workspace, release, sha, diagnostics=None):
     unit = f"jarvis-acceptance-{uuid.uuid4().hex[:12]}"
     command = ["systemd-run", "--quiet", "--wait", "--pipe", "--collect", f"--unit={unit}",
                "--property=User=jarvis", "--property=Group=jarvis", "--property=NoNewPrivileges=yes",
-               "--property=ProtectSystem=strict", "--property=ProtectHome=yes", "--property=PrivateTmp=yes",
+               "--property=ProtectSystem=strict", "--property=ProtectHome=yes",
                f"--property=ReadWritePaths={workspace / 'work'} {workspace / 'results'}",
                f"--property=EnvironmentFile={deployment.ENVIRONMENT}", "--property=RuntimeMaxSec=600",
                f"--property=WorkingDirectory={workspace}", f"--setenv=HOME={workspace / 'work'}",
+               f"--setenv=TMPDIR={workspace / 'work'}", f"--setenv=TMP={workspace / 'work'}",
+               f"--setenv=TEMP={workspace / 'work'}",
                "--setenv=PYTEST_DISABLE_PLUGIN_AUTOLOAD=1", "--setenv=PYTHONDONTWRITEBYTECODE=1",
                str(python), "-I", "-B", str(workspace / "runner.py"), sha, str(release), runtime_site]
     try:
