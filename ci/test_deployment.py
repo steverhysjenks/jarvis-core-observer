@@ -656,8 +656,8 @@ class CredentialPolicyTests(unittest.TestCase):
         for name in ("validate", "regression", "package_release"):
             block = text.split(f"\n{name}:\n", 1)[1].split("\n\n", 1)[0]
             self.assertNotIn("environment:", block)
-        self.assertNotIn("JARVIS_SSH_PRIVATE_KEY:", text)
-        self.assertNotIn("JARVIS_SSH_KNOWN_HOSTS:", text)
+        self.assertNotIn("HOMELAB_SSH_PRIVATE_KEY:", text)
+        self.assertNotIn("HOMELAB_SSH_KNOWN_HOSTS:", text)
 
 
 class ProductionAcceptanceTests(unittest.TestCase):
@@ -989,7 +989,7 @@ class ProductionAcceptanceTests(unittest.TestCase):
         (self.base / "hosts").write_text("dummy offline fixture")
         environment = {"CI_COMMIT_BRANCH": "main", "CI_COMMIT_REF_PROTECTED": "true", "CI_ENVIRONMENT_NAME": "production",
                        "CI_PIPELINE_SOURCE": "push", "JARVIS_OPERATION": "deploy", "CI_PIPELINE_ID": "42",
-                       "JARVIS_SSH_PRIVATE_KEY": str(self.base / "key"), "JARVIS_SSH_KNOWN_HOSTS": str(self.base / "hosts")}
+                       "HOMELAB_SSH_PRIVATE_KEY": str(self.base / "key"), "HOMELAB_SSH_KNOWN_HOSTS": str(self.base / "hosts")}
         for fetch_failure in (False, True):
             calls = []
             def command(args, **kwargs):

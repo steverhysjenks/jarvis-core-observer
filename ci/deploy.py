@@ -107,9 +107,9 @@ def main(action, diagnostics=None):
         remote_controller = (artifact / "remote.py").read_bytes()
         if remote_controller != git("show", f"{sha}:deployment/remote.py") or hashlib.sha256(remote_controller).hexdigest() != identity["controller_sha256"]:
             raise RuntimeError("Acceptance dependency controller differs from commit")
-    private_key = Path(os.environ.get("JARVIS_SSH_PRIVATE_KEY", ""))
+    private_key = Path(os.environ.get("HOMELAB_SSH_PRIVATE_KEY", ""))
     diagnostics["operation"] = "protected-ssh-credential-setup"
-    known_hosts = Path(os.environ.get("JARVIS_SSH_KNOWN_HOSTS", ""))
+    known_hosts = Path(os.environ.get("HOMELAB_SSH_KNOWN_HOSTS", ""))
     if not private_key.is_file() or not known_hosts.is_file():
         raise RuntimeError("Protected SSH key and verified known_hosts file variables are required")
     with tempfile.TemporaryDirectory(prefix="jarvis-ssh-") as directory:
