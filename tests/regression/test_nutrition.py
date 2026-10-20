@@ -272,3 +272,19 @@ async def test_confirmation_shows_serving_reference_and_corrected_total(monkeypa
     assert 'serving reference 35 g' in serving['description']
     correction=await service.prepare(NutritionSelection(action='update_entry',entry_id=ENTRY,entry_date='2026-10-18',quantity=3,unit='slice'))
     assert 'change total to 3 slice' in correction['description']
+
+@pytest.mark.asyncio
+async def test_protein_product_names_are_not_daily_total_questions(monkeypatch):
+    calls=[]
+    async def native(name,args,**kwargs):
+        calls.append(name)
+        assert name=='sparky_search_foods'
+        return {'data':[],'has_more':False}
+    monkeypatch.setattr(service.sparky,'call',native)
+    assert (await service.handle(VoiceRequest(text='Search food protein bar')))['status']=='read'
+    assert calls==['sparky_search_foods']
+    calls.clear()
+    assert (await service.handle(VoiceRequest(text="I've eaten a protein bar")))['status']=='clarification_required'
+    assert not calls
+    result=await service.handle(VoiceRequest(text='nutrition: product protein bar; 20 g; snack; today at 08:15'))
+    assert result['status']=='clarification_required' and calls==['sparky_search_foods']

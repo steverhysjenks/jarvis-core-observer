@@ -190,7 +190,7 @@ async def handle(request):
             return clarify("Please identify which nutrition action you are confirming.")
         return await confirm(request, rows[0]["id"])
     today = datetime.now(TZ).date()
-    if selection is None and ("calories" in text or "protein" in text):
+    if selection is None and text.startswith(('how many calories', 'how much protein')):
         data = await sparky.call("sparky_get_nutrition_summary", {"date": today.isoformat()})
         if not isinstance(data, list):
             raise NutritionUnavailable('Unexpected nutrition summary')
