@@ -19,6 +19,13 @@ class NutritionSelection(BaseModel):
     entry_date: date | None = None
 
 
+class NutritionHistory(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    start_date: date
+    end_date: date
+    offset: int = Field(default=0, ge=0, le=10000)
+
+
 class VoiceRequest(BaseModel):
     text: str = Field(
         min_length=1,
@@ -30,4 +37,5 @@ class VoiceRequest(BaseModel):
     listener: str | None = None
     request_id: str | None = Field(default=None, min_length=1, max_length=100)
     nutrition: NutritionSelection | None = None
+    nutrition_history: NutritionHistory | None = None
     nutrition_confirmation: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")

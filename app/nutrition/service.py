@@ -190,8 +190,15 @@ async def handle(request):
             return clarify("Please identify which nutrition action you are confirming.")
         return await confirm(request, rows[0]["id"])
     today = datetime.now(TZ).date()
-    if selection is None and text.startswith(('how many calories', 'how much protein')):
-        data = await sparky.call("sparky_get_nutrition_summary", {"date": today.isoformat()})
+    if selection is None and re.match(r'how (?:many calories|much protein) (?:have i|did i|do i)\b', text):
+        dates = re.findall(r'\b\d{4}-\d{2}-\d{2}\b', text)
+        try:
+            day = datetime.strptime(dates[0], '%Y-%m-%d').date() if len(dates)==1 else today-timedelta(days=1) if 'yesterday' in text else today
+        except ValueError:
+            return clarify('Please give a valid ISO date, today or yesterday.')
+        if len(dates)>1 or ('today' in text and 'yesterday' in text) or re.search(r'\b(?:last|ago|week|month|tomorrow)\b',text):
+            return clarify('Which single date: today, yesterday or YYYY-MM-DD?')
+        data = await sparky.call("sparky_get_nutrition_summary", {"date": day.isoformat()})
         if not isinstance(data, list):
             raise NutritionUnavailable('Unexpected nutrition summary')
         rows = data
@@ -201,18 +208,38 @@ async def handle(request):
         if row.get('energy_unit', 'kcal') != 'kcal':
             raise NutritionUnavailable('Native energy unit is not kcal')
         totals = {key: row.get(key) for key in CORE}
-        goal = await sparky.call("sparky_get_goal_snapshot", {"target_date": today.isoformat()})
+        goal = await sparky.call("sparky_get_goal_snapshot", {"target_date": day.isoformat()})
         remaining = None
         if not row.get('nutrition_warning') and isinstance(goal.get("calories"), (int, float)) and isinstance(totals["calories"], (int, float)):
             remaining = goal["calories"] - totals["calories"]
-        return {"status": "read", "date": today.isoformat(), "totals": totals, "energy_unit": "kcal", "nutrition_warning": row.get('nutrition_warning'), "remaining_calories": remaining, "source": "SparkyFitness native summary and effective goal", "unsupported_nutrients": {k: None for k in UNSUPPORTED}}
-    if selection is None and text.startswith("what did i eat"):
-        day = today - timedelta(days=1) if "yesterday" in text else today
-        result = await sparky.call("sparky_get_food_diary", {"date": day.isoformat(), "limit": 50})
+        return {"status": "read", "date": day.isoformat(), "totals": totals, "energy_unit": "kcal", "nutrition_warning": row.get('nutrition_warning'), "remaining_calories": remaining, "source": "SparkyFitness native summary and effective goal", "unsupported_nutrients": {k: None for k in UNSUPPORTED}}
+    if selection is None and (request.nutrition_history or text.startswith("what did i eat")):
+        history = request.nutrition_history
+        try:
+            dates = [datetime.strptime(v,'%Y-%m-%d').date() for v in re.findall(r'\b\d{4}-\d{2}-\d{2}\b',text)]
+            if history:
+                start, end, offset = history.start_date, history.end_date, history.offset
+            elif dates and len(dates)<=2:
+                start, end = dates[0], dates[-1]
+                page = re.search(r'\bpage (\d+)\b',text)
+                offset = (int(page[1])-1)*50 if page else 0
+            elif not dates and ('yesterday' in text or 'today' in text):
+                start = end = today-timedelta(days=1) if 'yesterday' in text else today
+                page = re.search(r'\bpage (\d+)\b',text)
+                offset = (int(page[1])-1)*50 if page else 0
+            else:
+                return clarify('Which date or ISO date range? Specify today, yesterday, or YYYY-MM-DD to YYYY-MM-DD.')
+        except ValueError:
+            return clarify('Please give valid ISO dates.')
+        if end<start or (end-start).days>30 or not 0<=offset<=10000:
+            return clarify('Use an ordered range of at most 31 days and a valid page/offset.')
+        result = await sparky.call("sparky_get_food_diary", {"start_date": start.isoformat(), "end_date": end.isoformat(), "limit": 50, "offset": offset})
         if "evening" in text:
-            entries = result.get("food_entries", [])
-            result["food_entries"] = [r for r in entries if r.get("entry_time") and r["entry_time"] >= "17:00"]
-            result["unclassified_time_count"] = sum(not r.get("entry_time") for r in entries)
+            result['unclassified_time_count'] = 0
+            for field in ('food_entries','meal_entries'):
+                entries = result.get(field, [])
+                result[field] = [r for r in entries if r.get("entry_time") and r["entry_time"] >= "17:00"]
+                result["unclassified_time_count"] += sum(not r.get("entry_time") for r in entries)
             result["evening_definition"] = "17:00 onwards Europe/London; missing times are not assigned"
         return {"status": "read", "diary": scrub(result), "source": "SparkyFitness"}
     if selection is None and text.startswith(("search ", "find ")):
