@@ -37,6 +37,14 @@ def load(context):
 
 def extract(draft, text):
     text = text.lower().strip().rstrip('.?!')
+    # Labels are opaque data, never consumption instructions. A label may itself
+    # contain quantities, dates, meal words or negative numbers.
+    product = re.search(r'\bproduct\s+"([^"]+)"', text) or re.search(r'\bproduct\s+([^;]+)', text)
+    if product:
+        draft['query'] = product[1].strip()
+        for field in ('food_id','variant_id','entry_id','choices','variant_choices'):
+            draft.pop(field,None)
+        text = text[:product.start()] + text[product.end():]
     if re.search(r'(?<!\w)-\s*(?:\d|one\b|two\b|three\b)|\b(?:between|and a half|and half)\b', text):
         raise ValueError('ambiguous or negative amount')
     today = datetime.now(service.TZ).date()
@@ -75,12 +83,6 @@ def extract(draft, text):
     if draft['action'] == 'update_entry' and 'unit' not in draft:
         unit = re.search(r'\b(slices?|servings?|grams?|g|ml)\b', text)
         if unit: draft['unit'] = {'gram':'g','grams':'g'}.get(unit[1],unit[1].rstrip('s'))
-    product = re.search(r'\bproduct\s+"([^"]+)"', text) or re.search(r'\bproduct\s+([^;]+)', text)
-    if product:
-        draft['query'] = product[1].strip()
-        draft.pop('food_id',None); draft.pop('variant_id',None); draft.pop('entry_id',None)
-        draft.pop('choices',None)
-        draft.pop('variant_choices',None)
     choice = re.search(r'\b(?:choice|entry)\s+(\d+)\b',text)
     if choice:
         options = draft.get('choices',[])

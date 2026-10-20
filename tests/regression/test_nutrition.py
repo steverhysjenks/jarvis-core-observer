@@ -328,3 +328,17 @@ async def test_yesterdays_totals_do_not_silently_return_today(monkeypatch):
     day=(service.datetime.now(service.TZ).date()-service.timedelta(days=1)).isoformat()
     result=await service.handle(VoiceRequest(text='How much protein did I eat yesterday?'))
     assert result['date']==day and calls[0][1]['date']==day and calls[1][1]['target_date']==day
+
+@pytest.mark.parametrize('label',['2 slices white bread','Breakfast dinner bar 2026-01-01','Packet weighs 100 g','Minus -2 g product'])
+def test_product_labels_cannot_supply_consumption_fields(label):
+    from app.nutrition.dialogue import extract
+    draft={'action':'log_food','quantity':1,'unit':'slice','meal':'snack','date':'2026-10-18','clock':'08:15'}
+    result=extract(draft.copy(),'nutrition: product "'+label+'"')
+    assert result['query']==label.lower()
+    assert all(result[k]==v for k,v in draft.items())
+
+
+def test_explicit_fields_override_portion_without_reading_label_numbers():
+    from app.nutrition.dialogue import extract
+    result=extract({'action':'log_food'},'nutrition: product "Breakfast 2 slices 2026-01-01"; 1 slice; snack; 2026-10-18 at 08:15')
+    assert result['quantity']==1 and result['unit']=='slice' and result['meal']=='snack' and result['date']=='2026-10-18'
