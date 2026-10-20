@@ -111,7 +111,8 @@ async def prepare(selection):
             if str(entry.get("unit", "")).rstrip("s") != selection.unit.rstrip("s"):
                 return clarify("Please correct it using the entry's original unit, so its nutrition reference is preserved.")
             payload.update(quantity=selection.quantity, unit=selection.unit)
-        return {"payload": payload, "description": f"{action} for {entry.get('food_name', entry.get('name', 'selected food'))}, currently {entry.get('quantity')} {entry.get('unit')}, on {selection.entry_date} at {entry.get('entry_time')}; entry {entry['id']}"}
+        target = f"; change total to {selection.quantity:g} {selection.unit}" if action == 'update_entry' else ''
+        return {"payload": payload, "description": f"{action} for {entry.get('food_name', entry.get('name', 'selected food'))}, currently {entry.get('quantity')} {entry.get('unit')}, on {selection.entry_date} at {entry.get('entry_time')}; entry {entry['id']}{target}"}
     if not selection.food_id or selection.quantity is None or not selection.unit or not selection.consumed_at or not selection.meal:
         return clarify("Which product, how much, which meal, and when did you eat it? Please select the food and give its actual consumption time.")
     if selection.meal == "dinner":
@@ -138,7 +139,7 @@ async def prepare(selection):
         return clarify("The selected serving has incomplete calorie or macro data.")
     meal = {"evening meal": "dinner", "snack": "snacks"}.get(selection.meal, selection.meal)
     payload = {"action": "log_food", "food_id": food["id"], "variant_id": variant["id"], "quantity": amount, "unit": unit, "meal_type": meal, "entry_date": consumed.date().isoformat(), "entry_time": consumed.strftime("%H:%M")}
-    return {"payload": payload, "description": f"Log {amount:g} {unit} of {food['name']} for {selection.meal} at {consumed.isoformat()}"}
+    return {"payload": payload, "description": f"Log {amount:g} {unit} of {food['name']} for {selection.meal} at {consumed.isoformat()}; selected serving reference {variant.get('serving_size')} {variant.get('serving_unit')}"}
 
 
 async def confirm(request, identifier):

@@ -260,3 +260,15 @@ async def test_unknown_followup_cannot_reuse_complete_draft():
 def test_multiple_portions_and_invalid_am_pm_are_not_silently_selected(amount):
     from app.nutrition.dialogue import extract
     with pytest.raises(ValueError): extract({'action':'log_food'},amount)
+
+@pytest.mark.asyncio
+async def test_confirmation_shows_serving_reference_and_corrected_total(monkeypatch):
+    async def native(name,args,**kwargs):
+        if name=='sparky_get_food_diary':
+            return {'food_entries':[{'id':ENTRY,'food_name':'Defined toast','quantity':2,'unit':'slice','entry_time':'08:15'}]}
+        return {'id':FOOD,'name':'Defined serving','is_custom':True,'variants':[{'id':VARIANT,'serving_size':35,'serving_unit':'g','calories':80,'protein':3,'carbs':15,'fat':1}]}
+    monkeypatch.setattr(service.sparky,'call',native)
+    serving=await service.prepare(selected(unit='serving',quantity=2,variant_id=VARIANT))
+    assert 'serving reference 35 g' in serving['description']
+    correction=await service.prepare(NutritionSelection(action='update_entry',entry_id=ENTRY,entry_date='2026-10-18',quantity=3,unit='slice'))
+    assert 'change total to 3 slice' in correction['description']
