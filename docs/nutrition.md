@@ -25,6 +25,8 @@ Disable `NUTRITION_ENABLED` and restart Core to withdraw only this capability, o
 
 ## Bounded voice clarification
 
+The Task 5 boundary repair is documented in [echomuse-nutrition.md](echomuse-nutrition.md). For clients forwarding an explicit conversation ID, bounded follow-ups no longer require the prefix. The examples below remain compatible diagnostic syntax for legacy clients. Spoken responses and continuation require the paired Router and HA forwarding updates; physical microphone acceptance is a separate gate.
+
 Core now resolves explicit follow-up details without changing Router or sending health data to a model. Start with a supported food request, then prefix follow-ups with `nutrition:` so a pending food dialogue cannot steal unrelated music commands. For example:
 
 1. `I had half a packet of biscuits.`
