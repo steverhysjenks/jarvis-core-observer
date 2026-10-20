@@ -57,6 +57,7 @@ async def test_hydration_native_confirmed_once(text,monkeypatch):
     assert done['operation_status']=='completed' and 'Logged 750 millilitres' in done['speech']
     duplicate=confirm.model_copy(update={'nutrition_confirmation':first['result']['confirmation_id']})
     assert (await nutrition_capability.handle(duplicate)).result['status']=='already_completed'
+    assert (await nutrition_capability.handle(confirm)).result['status']=='already_completed'
     assert writes==[{'action':'log_water','amount_ml':750.0,'entry_date':datetime.now(service.TZ).date().isoformat()}]
 
 @pytest.mark.asyncio

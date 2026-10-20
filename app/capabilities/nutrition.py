@@ -16,10 +16,11 @@ class NutritionCapability:
         text=request.text.strip().lower().rstrip('.?!')
         claimed = bool(request.nutrition or request.nutrition_history or request.nutrition_confirmation or service.INTENT.search(request.text.strip()) or is_followup(request))
         claimed = claimed or bool(re.search(r'\b(?:daily|configured|my)\b.*\bcalori(?:e|es)\b.*\b(?:target|goal)\b|\b(?:add|log|drank|drunk|had)\b.*\bwater\b',text))
-        if text in ("yes", "confirm", "yes please", "confirm nutrition"):
+        if text in ("yes", "confirm", "yes please", "confirm nutrition") and not request.nutrition_confirmation:
             # A pending nutrition confirmation must exist, or leave music/routing alone.
             with service.connection() as db:
-                claimed = db.execute("SELECT 1 FROM receipts WHERE context=? AND state='pending' AND expires>?", (service.context_key(request), service.time.time())).fetchone() is not None
+                states=('pending','done') if request.conversation_id else ('pending','pending')
+                claimed = db.execute("SELECT 1 FROM receipts WHERE context=? AND state IN (?,?) AND expires>?", (service.context_key(request), *states, service.time.time())).fetchone() is not None
         if not claimed:
             return CapabilityResult(False, False, None, "not_claimed")
         calls=[]

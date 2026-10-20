@@ -190,6 +190,10 @@ async def handle(request):
     if text in ("yes", "confirm", "yes please", "confirm nutrition"):
         with connection() as db:
             rows = db.execute("SELECT id FROM receipts WHERE context=? AND state='pending' AND expires>?", (context_key(request), time.time())).fetchall()
+            if not rows and request.conversation_id:
+                done=db.execute("SELECT id FROM receipts WHERE context=? AND state='done' AND expires>? ORDER BY expires DESC LIMIT 1",(context_key(request),time.time())).fetchone()
+                if done:
+                    return {'status':'already_completed','receipt_id':done['id']}
         if len(rows) != 1:
             return clarify("Please identify which nutrition action you are confirming.")
         return await confirm(request, rows[0]["id"])
