@@ -35,8 +35,23 @@ def load(context):
     return json.loads(row[0]) if row else None
 
 
+def is_followup(request):
+    """Claim only bounded replies in an explicit, unexpired nutrition session."""
+    draft=load(service.context_key(request)) if request.conversation_id else None
+    if not draft:
+        return False
+    text=request.text.strip().lower().rstrip('.?!')
+    text=re.sub(r'\b(choice|entry|variant) (one|two|three|four|five|six|seven|eight|nine|ten)\b',lambda m:f'{m[1]} {NUMBERS[m[2]]}',text)
+    if re.match(r'^(?:play|stop|pause|turn|switch|set|what|who|why|how|tell|can you|could you)\b',text):
+        return False
+    if not draft.get('query') and not draft.get('food_id') and not draft.get('entry_id'):
+        return bool(re.fullmatch(r"[\w '\-]{2,120}",text))
+    return bool(re.fullmatch(r'(?:product\s+[^;]+|choice \d+|entry \d+|variant \d+|breakfast|lunch|evening meal|snack|today|yesterday|just now|cancel|\d{4}-\d{2}-\d{2}|(?:at )?\d{1,2}:\d{2}|(?:\d+(?:\.\d+)?|one|two|three|half|a)\s+(?:slices?|servings?|g|grams?|ml|packets?)|packet weighs \d+(?:\.\d+)?\s*g)(?:\s*;\s*.+)?',text))
+
+
 def extract(draft, text):
     text = text.lower().strip().rstrip('.?!')
+    text=re.sub(r'\b(choice|entry|variant) (one|two|three|four|five|six|seven|eight|nine|ten)\b',lambda m:f'{m[1]} {NUMBERS[m[2]]}',text)
     # Labels are opaque data, never consumption instructions. A label may itself
     # contain quantities, dates, meal words or negative numbers.
     product = re.search(r'\bproduct\s+"([^"]+)"', text) or re.search(r'\bproduct\s+([^;]+)', text)
@@ -110,25 +125,28 @@ def options_message(rows, diary=False):
 async def resolve(request):
     text = request.text.strip().lower()
     context = service.context_key(request)
-    if text in ('nutrition cancel','nutrition: cancel'):
+    if text in ('nutrition cancel','nutrition: cancel') or (text=='cancel' and is_followup(request)):
         with service.connection() as db:
             db.execute("DELETE FROM receipts WHERE context=? AND state='pending'", (context,))
         store(context,{})
         return {'status':'cancelled','message':'Pending nutrition actions cancelled. No diary entry was changed.'}
-    continuing = text.startswith('nutrition:') or text.startswith('nutrition ')
-    if continuing and not re.search(r'\b(?:product|choice|entry|variant|breakfast|lunch|dinner|evening meal|snack|today|yesterday|just now|packet|g|ml|grams?|slices?|servings?)\b|\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}', text):
+    continuing = text.startswith('nutrition:') or text.startswith('nutrition ') or is_followup(request)
+    if continuing and not is_followup(request) and not re.search(r'\b(?:product|choice|entry|variant|breakfast|lunch|dinner|evening meal|snack|today|yesterday|just now|packet|g|ml|grams?|slices?|servings?)\b|\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}', text):
         return service.clarify('I could not identify a nutrition detail. Please give an explicit product, numbered choice, amount/unit, meal, date or 24-hour consumption time.')
     draft = load(context) if continuing else None
     if not draft:
         action = 'delete_entry' if text.startswith(('remove ','delete ')) else 'update_entry' if text.startswith('change ') else 'log_food'
         draft = {'action':action}
+    if continuing and not any(draft.get(k) for k in ('query','food_id','entry_id')) and not re.search(r'\b(?:product|choice|entry|variant|breakfast|lunch|dinner|snack|today|yesterday|just now)\b|\d',text):
+        draft['query']=text
+        text=''  # A bare product reply is opaque, like an explicit product label.
     try:
         extract(draft, text)
     except (ValueError, OverflowError, ZeroDivisionError):
         return service.clarify('Please give a valid date, amount or numbered choice. Reply with nutrition: followed by the corrected detail.')
     store(context,draft)
     def ask(message, **extra):
-        return dict(service.clarify(message+' Reply with nutrition: followed by the missing details.'), **extra)
+        return dict(service.clarify(message), **extra)
     if draft.get('meal') == 'dinner':
         return ask('By dinner, do you mean lunch or your evening meal?')
     if not draft.get('query') and not draft.get('food_id') and not draft.get('entry_id'):

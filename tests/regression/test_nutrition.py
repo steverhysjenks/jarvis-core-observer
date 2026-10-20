@@ -13,6 +13,113 @@ FOOD = '11111111-1111-4111-8111-111111111111'
 VARIANT = '22222222-2222-4222-8222-222222222222'
 ENTRY = '33333333-3333-4333-8333-333333333333'
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('text,spoken', [
+    (' How many calories have I consumed today?', '300 calories'),
+    ('HOW MUCH PROTEIN HAVE I CONSUMED TODAY?', '12 grams of protein'),
+    ('How many calories do I have left today?', '1,700 calories remaining'),
+    ('What is my daily calorie target?', '2,000 calories'),
+])
+async def test_echomuse_reads_have_actual_spoken_values(text, spoken, monkeypatch):
+    async def native(name, arguments, **kwargs):
+        assert not kwargs.get('write')
+        return {'calories':2000} if name=='sparky_get_goal_snapshot' else [{'calories':300,'protein':12,'carbs':40,'fat':10}]
+    monkeypatch.setattr(service.sparky,'call',native)
+    result=(await nutrition_capability.handle(VoiceRequest(text=text,conversation_id='voice-session'))).as_dict()
+    assert result['domain']=='nutrition' and result['operation_status']=='read'
+    assert spoken in result['speech'] and result['speech']!='Done.'
+    assert result['conversation_id']=='voice-session'
+
+@pytest.mark.asyncio
+async def test_echomuse_yesterday_spoken_diary(monkeypatch):
+    async def native(name, arguments, **kwargs):
+        assert name=='sparky_get_food_diary'
+        return {'food_entries':[{'food_name':'Fixture toast','quantity':2,'unit':'slice'}]}
+    monkeypatch.setattr(service.sparky,'call',native)
+    result=(await nutrition_capability.handle(VoiceRequest(text='What did I eat yesterday?'))).as_dict()
+    assert '2 slice of Fixture toast' in result['speech']
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('text', ['Can you add 750ml of water to my food diary?', 'Log 0.75 litres of water today'])
+async def test_hydration_native_confirmed_once(text,monkeypatch):
+    writes=[]
+    async def native(name,arguments,**kwargs):
+        assert kwargs.get('write') and name=='sparky_manage_food'
+        writes.append(arguments)
+        return {'message':'✅ Logged 750ml water.'}
+    monkeypatch.setattr(service.sparky,'call',native)
+    request=VoiceRequest(text=text,conversation_id='water-session',request_id='water-request')
+    first=(await nutrition_capability.handle(request)).as_dict()
+    assert first['operation_status']=='confirmation_required' and not writes
+    assert '750 millilitres' in first['speech'] and first['continue_conversation']
+    confirm=VoiceRequest(text='Yes.',conversation_id='water-session')
+    done=(await nutrition_capability.handle(confirm)).as_dict()
+    assert done['operation_status']=='completed' and 'Logged 750 millilitres' in done['speech']
+    duplicate=confirm.model_copy(update={'nutrition_confirmation':first['result']['confirmation_id']})
+    assert (await nutrition_capability.handle(duplicate)).result['status']=='already_completed'
+    assert writes==[{'action':'log_water','amount_ml':750.0,'entry_date':datetime.now(service.TZ).date().isoformat()}]
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('text',['Log -750ml water','Log 0ml water','Log 750ml and 500ml water','Log 100 litres water'])
+async def test_hydration_ambiguous_amount_never_writes(text,monkeypatch):
+    async def forbidden(*args,**kwargs): pytest.fail('Invalid water amount reached MCP')
+    monkeypatch.setattr(service.sparky,'call',forbidden)
+    assert (await nutrition_capability.handle(VoiceRequest(text=text))).result['status']=='clarification_required'
+
+@pytest.mark.asyncio
+async def test_unprefixed_clarification_session_and_other_domains(monkeypatch):
+    request=VoiceRequest(text='I had biscuits',conversation_id='session-one',user_context='owner')
+    first=(await nutrition_capability.handle(request)).as_dict()
+    assert first['continue_conversation']
+    follow=request.model_copy(update={'text':'lunch'})
+    assert (await nutrition_capability.handle(follow)).claimed
+    for text in ['Turn on the kitchen light','Play jazz','Who wrote Hamlet?']:
+        assert not (await nutrition_capability.handle(request.model_copy(update={'text':text}))).claimed
+    assert not (await nutrition_capability.handle(follow.model_copy(update={'conversation_id':'other'}))).claimed
+    assert not (await nutrition_capability.handle(follow.model_copy(update={'user_context':'other'}))).claimed
+
+def test_missing_results_fail_closed():
+    from app.nutrition.presentation import present
+    assert 'could not verify' in present({'status':'unexpected'})
+    assert 'incomplete' in present({'status':'read','query':'remaining','totals':{},'remaining_calories':None})
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status,expected_type,continuing', [('read','query_answer',False),('clarification_required','action_done',True),('unavailable','error',False)])
+async def test_ha_forwarding_boundary(status,expected_type,continuing):
+    # Execute the actual integration method with isolated HA/session interfaces.
+    import ast
+    from pathlib import Path
+    from types import SimpleNamespace as NS
+    import uuid
+    source=Path(__file__).resolve().parents[2]/'integrations/homeassistant/jarvis_router/conversation.py'
+    tree=ast.parse(source.read_text(encoding='utf-8'))
+    cls=next(n for n in tree.body if isinstance(n,ast.ClassDef))
+    method=next(n for n in cls.body if isinstance(n,ast.AsyncFunctionDef) and n.name=='_async_handle_message')
+    captured={}
+    class Response:
+        status=200
+        async def __aenter__(self): return self
+        async def __aexit__(self,*args): pass
+        async def json(self): return {'speech':'Actual native answer','domain':'nutrition','operation_status':status,'continue_conversation':continuing}
+    class Session:
+        def post(self,*args,**kwargs): captured.update(kwargs['json']);return Response()
+    class IntentResponse:
+        def __init__(self,**kwargs): self.response_type='action_done'
+        def async_set_speech(self,value): self.speech=value
+        def async_set_error(self,code,value): self.response_type='error';self.speech=value
+    namespace={'ConversationInput':object,'ChatLog':object,'ConversationResult':object,
+               'dr':None,'ar':None,'_LOGGER':NS(debug=lambda *a:None),'uuid':uuid,
+               'async_get_clientsession':lambda _:Session(),'aiohttp':NS(ClientTimeout=lambda **kw:kw),
+               'AssistantContent':lambda **kw:kw,'conversation':NS(ConversationResult=lambda **kw:NS(**kw)),
+               'intent':NS(IntentResponse=IntentResponse,IntentResponseType=NS(QUERY_ANSWER='query_answer'),IntentResponseErrorCode=NS(FAILED_TO_HANDLE='failed'))}
+    exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),namespace)
+    user=NS(text='How much protein have I consumed today?',device_id=None,conversation_id='ha-session',context=NS(user_id='owner'),agent_id='conversation.jarvis_router',language='en',satellite_id='office')
+    result=await namespace['_async_handle_message'](NS(hass=None,_url='http://router.invalid',_api_key='test-key'),user,NS(async_add_assistant_content_without_tools=lambda _:None))
+    assert captured['conversation_id']=='ha-session' and captured['user_context']=='owner'
+    assert captured['origin']=='home_assistant' and captured['request_id']
+    assert result.response.speech=='Actual native answer'
+    assert result.response.response_type==expected_type and result.continue_conversation==continuing
+
 @pytest.fixture(autouse=True)
 def state(monkeypatch, tmp_path):
     monkeypatch.setattr(service, 'STATE_PATH', tmp_path / 'nutrition.sqlite')
