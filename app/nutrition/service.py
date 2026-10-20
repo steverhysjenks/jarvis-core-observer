@@ -176,6 +176,7 @@ async def confirm(request, identifier):
 
 async def handle(request):
     text = request.text.strip().lower().rstrip(".?!")
+    text = re.sub(r'^nutrition[: ]+\s*', '', text)
     selection = request.nutrition
     if request.nutrition_confirmation:
         return await confirm(request, request.nutrition_confirmation)

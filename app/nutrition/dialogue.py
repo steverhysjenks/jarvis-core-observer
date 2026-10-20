@@ -15,6 +15,9 @@ NUMBERS = {'a': 1, 'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
 
 
 def number(value):
+    if '/' in value:
+        numerator, denominator = value.split('/')
+        return float(numerator)/float(denominator)
     return NUMBERS[value] if value in NUMBERS else float(value)
 
 
@@ -34,6 +37,8 @@ def load(context):
 
 def extract(draft, text):
     text = text.lower().strip().rstrip('.?!')
+    if re.search(r'(?<!\w)-\s*(?:\d|one\b|two\b|three\b)|\b(?:between|and a half|and half)\b', text):
+        raise ValueError('ambiguous or negative amount')
     today = datetime.now(service.TZ).date()
     explicit_date = re.search(r'\b(\d{4}-\d{2}-\d{2})\b', text)
     if explicit_date:
@@ -61,7 +66,7 @@ def extract(draft, text):
     pack = re.search(r'\bpack(?:et)? (?:weight |weighs )?(\d+(?:\.\d+)?)\s*g\b', text)
     if pack: draft['pack_weight_g'] = float(pack[1])
     amount_text = text[:pack.start()]+text[pack.end():] if pack else text
-    amount = re.search(r'\b(\d+(?:\.\d+)?|a|one|two|three|four|five|six|seven|eight|nine|ten|half|whole|full)\s+(?:a\s+)?(grams?|g|ml|slices?|servings?|packets?)\b', amount_text)
+    amount = re.search(r'(?<![\w.\-/])(\d+/\d+|\d+(?:\.\d+)?|\.\d+|a|one|two|three|four|five|six|seven|eight|nine|ten|half|whole|full)\s+(?:a\s+)?(grams?|g|ml|slices?|servings?|packets?)\b', amount_text)
     if amount:
         draft['quantity'] = number(amount[1])
         draft['unit'] = {'gram':'g','grams':'g'}.get(amount[2], amount[2].rstrip('s'))
@@ -107,6 +112,8 @@ async def resolve(request):
         store(context,{})
         return {'status':'cancelled','message':'Pending nutrition actions cancelled. No diary entry was changed.'}
     continuing = text.startswith('nutrition:') or text.startswith('nutrition ')
+    if continuing and not re.search(r'\b(?:product|choice|entry|variant|breakfast|lunch|dinner|evening meal|snack|today|yesterday|just now|packet|g|ml|grams?|slices?|servings?)\b|\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}', text):
+        return service.clarify('I could not identify a nutrition detail. Please give an explicit product, numbered choice, amount/unit, meal, date or 24-hour consumption time.')
     draft = load(context) if continuing else None
     if not draft:
         action = 'delete_entry' if text.startswith(('remove ','delete ')) else 'update_entry' if text.startswith('change ') else 'log_food'

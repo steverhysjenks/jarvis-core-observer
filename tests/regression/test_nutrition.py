@@ -238,3 +238,20 @@ async def test_voice_cancel_does_not_mutate_diary(monkeypatch):
     assert (await dialogue.resolve(request))['status']=='cancelled'
     assert dialogue.load(service.context_key(request))=={}
 
+
+@pytest.mark.parametrize('amount,expected',[('0.5 packet',0.5),('.5 packet',0.5),('1/2 packet',0.5),('half a packet',0.5),('two slices',2)])
+def test_voice_portion_parser_never_reinterprets_fraction(amount,expected):
+    from app.nutrition.dialogue import extract
+    assert extract({'action':'log_food'},amount)['quantity']==expected
+
+@pytest.mark.parametrize('amount',['-2 g','-two slices','one and a half packets','between 1 and 2 servings'])
+def test_ambiguous_amounts_are_rejected(amount):
+    from app.nutrition.dialogue import extract
+    with pytest.raises(ValueError): extract({'action':'log_food'},amount)
+
+@pytest.mark.asyncio
+async def test_unknown_followup_cannot_reuse_complete_draft():
+    from app.nutrition import dialogue
+    request=VoiceRequest(text='nutrition: unrelated words')
+    dialogue.store(service.context_key(request),{'action':'log_food','food_id':FOOD,'quantity':1,'unit':'g','meal':'snack','date':'2026-10-18','clock':'08:15'})
+    assert (await dialogue.resolve(request))['status']=='clarification_required'
