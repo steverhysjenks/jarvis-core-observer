@@ -153,6 +153,8 @@ class JarvisRouterConversationEntity(ConversationEntity):
 
         if not isinstance(speech, str) or not speech.strip():
             speech = "Sorry, I didn't receive a response."
+            data['operation_status']='invalid_response'
+            data['continue_conversation']=False
 
         chat_log.async_add_assistant_content_without_tools(
             AssistantContent(
@@ -168,7 +170,7 @@ class JarvisRouterConversationEntity(ConversationEntity):
 
         if data.get('domain') == 'nutrition':
             status=data.get('operation_status')
-            if status in ('unavailable','invalid_response','reconciliation_required','unknown'):
+            if status not in ('read','completed','already_completed','clarification_required','confirmation_required','cancelled'):
                 result.async_set_error(intent.IntentResponseErrorCode.FAILED_TO_HANDLE, speech)
             elif status == 'read':
                 result.response_type=intent.IntentResponseType.QUERY_ANSWER
