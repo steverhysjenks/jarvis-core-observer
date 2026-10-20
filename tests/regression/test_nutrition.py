@@ -288,3 +288,9 @@ async def test_protein_product_names_are_not_daily_total_questions(monkeypatch):
     assert not calls
     result=await service.handle(VoiceRequest(text='nutrition: product protein bar; 20 g; snack; today at 08:15'))
     assert result['status']=='clarification_required' and calls==['sparky_search_foods']
+
+@pytest.mark.asyncio
+async def test_zero_denominator_is_a_clarification_not_a_write():
+    from app.nutrition import dialogue
+    result=await dialogue.resolve(VoiceRequest(text='nutrition: 1/0 packet'))
+    assert result['status']=='clarification_required'
