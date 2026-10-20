@@ -9,7 +9,7 @@ class NutritionCapability:
     async def handle(self, request):
         if os.getenv("NUTRITION_ENABLED", "false").lower() != "true":
             return CapabilityResult(False, False, None, "not_claimed")
-        claimed = bool(request.nutrition or request.nutrition_confirmation or service.INTENT.search(request.text))
+        claimed = bool(request.nutrition or request.nutrition_history or request.nutrition_confirmation or service.INTENT.search(request.text.strip()))
         if request.text.strip().lower() in ("yes", "confirm nutrition"):
             # A pending nutrition confirmation must exist, or leave music/routing alone.
             with service.connection() as db:

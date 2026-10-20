@@ -272,3 +272,59 @@ async def test_confirmation_shows_serving_reference_and_corrected_total(monkeypa
     assert 'serving reference 35 g' in serving['description']
     correction=await service.prepare(NutritionSelection(action='update_entry',entry_id=ENTRY,entry_date='2026-10-18',quantity=3,unit='slice'))
     assert 'change total to 3 slice' in correction['description']
+
+@pytest.mark.asyncio
+async def test_protein_product_names_are_not_daily_total_questions(monkeypatch):
+    calls=[]
+    async def native(name,args,**kwargs):
+        calls.append(name)
+        assert name=='sparky_search_foods'
+        return {'data':[],'has_more':False}
+    monkeypatch.setattr(service.sparky,'call',native)
+    assert (await service.handle(VoiceRequest(text='Search food protein bar')))['status']=='read'
+    assert calls==['sparky_search_foods']
+    calls.clear()
+    assert (await service.handle(VoiceRequest(text="I've eaten a protein bar")))['status']=='clarification_required'
+    assert not calls
+    result=await service.handle(VoiceRequest(text='nutrition: product protein bar; 20 g; snack; today at 08:15'))
+    assert result['status']=='clarification_required' and calls==['sparky_search_foods']
+
+@pytest.mark.asyncio
+async def test_zero_denominator_is_a_clarification_not_a_write():
+    from app.nutrition import dialogue
+    result=await dialogue.resolve(VoiceRequest(text='nutrition: 1/0 packet'))
+    assert result['status']=='clarification_required'
+
+@pytest.mark.asyncio
+async def test_history_explicit_date_range_and_pagination(monkeypatch):
+    calls=[]
+    async def native(name,args,**kwargs):
+        calls.append((name,args))
+        return {'food_entries':[],'meal_entries':[{'entry_time':'08:00'},{'entry_time':'19:00'}],'has_more':True,'next_offset':100}
+    monkeypatch.setattr(service.sparky,'call',native)
+    result=await service.handle(VoiceRequest(text='What did I eat 2026-10-01 to 2026-10-20 evening page 2?'))
+    assert calls[0][1]=={'start_date':'2026-10-01','end_date':'2026-10-20','limit':50,'offset':50}
+    assert len(result['diary']['meal_entries'])==1 and result['diary']['has_more']
+    calls.clear()
+    assert (await service.handle(VoiceRequest(text='What did I eat last Monday?')))['status']=='clarification_required'
+    assert not calls
+    result=await service.handle(VoiceRequest(text='History',nutrition_history={'start_date':'2026-10-18','end_date':'2026-10-19','offset':50}))
+    assert result['status']=='read' and calls[0][1]['offset']==50
+
+@pytest.mark.asyncio
+async def test_history_rejects_unbounded_or_reversed_range(monkeypatch):
+    async def forbidden(*args,**kwargs): pytest.fail('Invalid range reached server')
+    monkeypatch.setattr(service.sparky,'call',forbidden)
+    for start,end in [('2026-01-01','2026-10-20'),('2026-10-20','2026-10-01')]:
+        assert (await service.handle(VoiceRequest(text='History',nutrition_history={'start_date':start,'end_date':end})))['status']=='clarification_required'
+
+@pytest.mark.asyncio
+async def test_yesterdays_totals_do_not_silently_return_today(monkeypatch):
+    calls=[]
+    async def native(name,args,**kwargs):
+        calls.append((name,args))
+        return {'calories':2000} if name=='sparky_get_goal_snapshot' else [{'calories':100,'protein':1,'carbs':2,'fat':3}]
+    monkeypatch.setattr(service.sparky,'call',native)
+    day=(service.datetime.now(service.TZ).date()-service.timedelta(days=1)).isoformat()
+    result=await service.handle(VoiceRequest(text='How much protein did I eat yesterday?'))
+    assert result['date']==day and calls[0][1]['date']==day and calls[1][1]['target_date']==day

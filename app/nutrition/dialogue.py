@@ -122,7 +122,7 @@ async def resolve(request):
         draft = {'action':action}
     try:
         extract(draft, text)
-    except (ValueError, OverflowError):
+    except (ValueError, OverflowError, ZeroDivisionError):
         return service.clarify('Please give a valid date, amount or numbered choice. Reply with nutrition: followed by the corrected detail.')
     store(context,draft)
     def ask(message, **extra):

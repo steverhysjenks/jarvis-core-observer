@@ -37,3 +37,5 @@ Replies are deliberately bounded: explicit product names, positive amounts with 
 
 An explicit native variant can now accept serving counts even when its reference unit is grams; Sparky performs the calculation. DST-ambiguous/skipped local times require the existing offset-aware structured request, rather than guessing an offset. The dialogue stores private ten-minute drafts in the same mode-0600 receipt database; include it in CT122 backup coverage. Structured inputs remain supported for callers that already resolved the selection.
 
+
+History also accepts explicit ISO date ranges of at most 31 days and numbered pages (`What did I eat 2026-10-01 to 2026-10-20 evening page 2?`). Each page has at most 50 native entries and retains has_more/next_offset; iterate pages and bounded ranges for later pattern analysis. Structured callers may send `nutrition_history: {start_date, end_date, offset}`. Unsupported relative dates are clarified instead of silently returning today. Explicit single-date/yesterday totals use the matching native effective goal. Evening filtering applies to food and meal entries; missing times remain unclassified.
