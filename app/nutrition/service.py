@@ -194,12 +194,14 @@ async def handle(request):
         if len(rows) > 1:
             raise NutritionUnavailable("Unexpected multi-day nutrition summary")
         row = rows[0] if rows else {key: 0 for key in CORE}
+        if row.get('energy_unit', 'kcal') != 'kcal':
+            raise NutritionUnavailable('Native energy unit is not kcal')
         totals = {key: row.get(key) for key in CORE}
         goal = await sparky.call("sparky_get_goal_snapshot", {"target_date": today.isoformat()})
         remaining = None
-        if isinstance(goal.get("calories"), (int, float)) and isinstance(totals["calories"], (int, float)):
+        if not row.get('nutrition_warning') and isinstance(goal.get("calories"), (int, float)) and isinstance(totals["calories"], (int, float)):
             remaining = goal["calories"] - totals["calories"]
-        return {"status": "read", "date": today.isoformat(), "totals": totals, "remaining_calories": remaining, "source": "SparkyFitness native summary and effective goal", "unsupported_nutrients": {k: None for k in UNSUPPORTED}}
+        return {"status": "read", "date": today.isoformat(), "totals": totals, "energy_unit": "kcal", "nutrition_warning": row.get('nutrition_warning'), "remaining_calories": remaining, "source": "SparkyFitness native summary and effective goal", "unsupported_nutrients": {k: None for k in UNSUPPORTED}}
     if selection is None and text.startswith("what did i eat"):
         day = today - timedelta(days=1) if "yesterday" in text else today
         result = await sparky.call("sparky_get_food_diary", {"date": day.isoformat(), "limit": 50})

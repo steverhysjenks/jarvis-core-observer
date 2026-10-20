@@ -43,9 +43,13 @@ class SparkyMCP:
             if len(response.content) > 1_000_000:
                 raise ValueError("oversized result")
             body = response.json()
+            if not isinstance(body, dict):
+                raise ValueError('invalid JSON-RPC object')
             if body.get("id") != 1 or body.get("jsonrpc") != "2.0" or body.get("error"):
                 raise ValueError("invalid JSON-RPC response")
             result = body["result"]
+            if not isinstance(result, dict):
+                raise ValueError('invalid MCP result')
             if result.get("isError"):
                 raise ValueError("remote tool failed")
             return result

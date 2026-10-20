@@ -156,3 +156,16 @@ async def test_wrong_mcp_server_refused(monkeypatch):
     monkeypatch.setattr(client, 'rpc', rpc)
     with pytest.raises(NutritionUnavailable):
         await client.call('sparky_search_foods', {'query': 'toast'})
+
+@pytest.mark.asyncio
+async def test_incomplete_native_day_and_energy_units_are_not_misrepresented(monkeypatch):
+    row = {'calories': 100, 'protein': 1, 'carbs': 2, 'fat': 3,
+           'nutrition_warning': 'Legacy entries excluded', 'energy_unit': 'kcal'}
+    async def native(name, arguments, **kwargs):
+        return {'calories': 2000} if name == 'sparky_get_goal_snapshot' else [row]
+    monkeypatch.setattr(service.sparky, 'call', native)
+    result = await service.handle(VoiceRequest(text='How many calories do I have left today?'))
+    assert result['remaining_calories'] is None and result['nutrition_warning']
+    row['energy_unit'] = 'kJ'
+    with pytest.raises(NutritionUnavailable):
+        await service.handle(VoiceRequest(text='How much protein have I eaten?'))
