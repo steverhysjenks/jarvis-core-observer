@@ -255,3 +255,8 @@ async def test_unknown_followup_cannot_reuse_complete_draft():
     request=VoiceRequest(text='nutrition: unrelated words')
     dialogue.store(service.context_key(request),{'action':'log_food','food_id':FOOD,'quantity':1,'unit':'g','meal':'snack','date':'2026-10-18','clock':'08:15'})
     assert (await dialogue.resolve(request))['status']=='clarification_required'
+
+@pytest.mark.parametrize('amount',['2 slices and 3 g','0:15pm'])
+def test_multiple_portions_and_invalid_am_pm_are_not_silently_selected(amount):
+    from app.nutrition.dialogue import extract
+    with pytest.raises(ValueError): extract({'action':'log_food'},amount)

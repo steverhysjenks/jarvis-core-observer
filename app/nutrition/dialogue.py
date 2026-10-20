@@ -53,7 +53,7 @@ def extract(draft, text):
     if clock:
         hour = int(clock[1])
         if clock[3]:
-            if hour > 12: raise ValueError('invalid 12-hour clock')
+            if not 1 <= hour <= 12: raise ValueError('invalid 12-hour clock')
             hour = hour % 12 + (12 if clock[3] == 'pm' else 0)
         draft['clock'] = f'{hour:02}:{clock[2]}'
     if re.search(r'\bdinner\b', text): draft['meal'] = 'dinner'
@@ -66,7 +66,9 @@ def extract(draft, text):
     pack = re.search(r'\bpack(?:et)? (?:weight |weighs )?(\d+(?:\.\d+)?)\s*g\b', text)
     if pack: draft['pack_weight_g'] = float(pack[1])
     amount_text = text[:pack.start()]+text[pack.end():] if pack else text
-    amount = re.search(r'(?<![\w.\-/])(\d+/\d+|\d+(?:\.\d+)?|\.\d+|a|one|two|three|four|five|six|seven|eight|nine|ten|half|whole|full)\s+(?:a\s+)?(grams?|g|ml|slices?|servings?|packets?)\b', amount_text)
+    amounts = list(re.finditer(r'(?<![\w.\-/])(\d+/\d+|\d+(?:\.\d+)?|\.\d+|a|one|two|three|four|five|six|seven|eight|nine|ten|half|whole|full)\s+(?:a\s+)?(grams?|g|ml|slices?|servings?|packets?)\b', amount_text))
+    if len(amounts)>1: raise ValueError('multiple consumed amounts')
+    amount = amounts[0] if amounts else None
     if amount:
         draft['quantity'] = number(amount[1])
         draft['unit'] = {'gram':'g','grams':'g'}.get(amount[2], amount[2].rstrip('s'))

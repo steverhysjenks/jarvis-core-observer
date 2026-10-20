@@ -167,6 +167,8 @@ async def confirm(request, identifier):
         result = {"status": "completed", "receipt_id": identifier, "entry_id": entry_id.group(1) if entry_id else payload.get("entry_id")}
         with connection() as db:
             db.execute("UPDATE receipts SET state='done', result=? WHERE id=?", (json.dumps(result), identifier))
+        from app.nutrition.dialogue import store
+        store(context_key(request), {})
         return result
     except NutritionUnavailable:
         with connection() as db:
@@ -229,6 +231,9 @@ async def handle(request):
     fingerprint = hashlib.sha256(json.dumps([context_key(request), payload], sort_keys=True).encode()).hexdigest()
     identity = hashlib.sha256((request.request_id or fingerprint).encode()).hexdigest()
     with connection() as db:
+        uncertain = db.execute("SELECT id FROM receipts WHERE context=? AND state IN ('in_flight','uncertain')", (context_key(request),)).fetchone()
+        if uncertain:
+            return {"status":"reconciliation_required", "receipt_id":uncertain['id'], "message":"An earlier write has an uncertain outcome. Verify the native diary and have the receipt reconciled before another write."}
         existing = db.execute("SELECT * FROM receipts WHERE id=?", (identity,)).fetchone()
         if existing:
             if existing["fingerprint"] != fingerprint or existing["context"] != context_key(request):
