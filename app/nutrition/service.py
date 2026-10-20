@@ -25,6 +25,8 @@ def clarify(message):
 
 
 def context_key(request):
+    if request.conversation_id:
+        return hashlib.sha256(json.dumps([request.user_context, request.conversation_id, request.satellite]).encode()).hexdigest()
     return hashlib.sha256(json.dumps([request.area, request.listener, request.satellite]).encode()).hexdigest()
 
 
@@ -165,7 +167,9 @@ async def confirm(request, identifier):
         entry_id = re.search(r"Entry ID: ([0-9a-f-]{36})", message)
         if payload['action'] == 'log_food' and entry_id is None:
             raise NutritionUnavailable('Missing logged entry identifier')
-        result = {"status": "completed", "receipt_id": identifier, "entry_id": entry_id.group(1) if entry_id else payload.get("entry_id")}
+        result = {"status": "completed", "receipt_id": identifier, "entry_id": entry_id.group(1) if entry_id else payload.get("entry_id"), "action": payload['action']}
+        if payload['action'] == 'log_water':
+            result.update(amount_ml=payload['amount_ml'], date=payload['entry_date'])
         with connection() as db:
             db.execute("UPDATE receipts SET state='done', result=? WHERE id=?", (json.dumps(result), identifier))
         from app.nutrition.dialogue import store
@@ -183,13 +187,32 @@ async def handle(request):
     selection = request.nutrition
     if request.nutrition_confirmation:
         return await confirm(request, request.nutrition_confirmation)
-    if text in ("yes", "confirm nutrition"):
+    if text in ("yes", "confirm", "yes please", "confirm nutrition"):
         with connection() as db:
             rows = db.execute("SELECT id FROM receipts WHERE context=? AND state='pending' AND expires>?", (context_key(request), time.time())).fetchall()
+            if not rows and request.conversation_id:
+                done=db.execute("SELECT id FROM receipts WHERE context=? AND state='done' AND expires>? ORDER BY expires DESC LIMIT 1",(context_key(request),time.time())).fetchone()
+                if done:
+                    return {'status':'already_completed','receipt_id':done['id']}
         if len(rows) != 1:
             return clarify("Please identify which nutrition action you are confirming.")
         return await confirm(request, rows[0]["id"])
     today = datetime.now(TZ).date()
+    if selection is None and re.search(r'\b(?:calorie|calories)\b.*\b(?:target|goal)\b|\b(?:target|goal)\b.*\bcalori', text):
+        goal = await sparky.call('sparky_get_goal_snapshot', {'target_date': today.isoformat()})
+        return {'status':'read', 'date':today.isoformat(), 'effective_goal':goal.get('calories'), 'query':'goal', 'energy_unit':'kcal'}
+    water = re.search(r'\b(\d+(?:\.\d+)?)\s*(ml|millilitres?|milliliters?|l|litres?|liters?)\b', text)
+    if selection is None and re.search(r'\bwater\b',text):
+        if not water or not re.search(r'\b(?:add|log|drank|drunk|had)\b',text):
+            return clarify('How much water should I log? Give an amount in millilitres or litres and today or yesterday. Water is tracked separately from food.')
+        amount=float(water[1])*(1000 if water[2] in ('l','litre','litres','liter','liters') else 1)
+        if len(re.findall(r'\b\d+(?:\.\d+)?\s*(?:ml|millilitres?|milliliters?|l|litres?|liters?)\b',text)) != 1 or not 0 < amount <= 10000 or re.search(r'\b(?:tomorrow|last|ago|week|month)\b|(?<!\w)-\s*\d',text):
+            return clarify('Give one water amount above zero and at most 10 litres, for today or yesterday.')
+        day=today-timedelta(days=1) if 'yesterday' in text else today
+        dates=re.findall(r'\b\d{4}-\d{2}-\d{2}\b',text)
+        if dates or ('today' in text and 'yesterday' in text):
+            return clarify('Please specify only today or yesterday for this water entry.')
+        return queue_prepared(request, {'payload':{'action':'log_water','amount_ml':amount,'entry_date':day.isoformat()}, 'description':f'Log {amount:g} millilitres of water for {day}, separately from food'})
     if selection is None and re.match(r'how (?:many calories|much protein) (?:have i|did i|do i)\b', text):
         dates = re.findall(r'\b\d{4}-\d{2}-\d{2}\b', text)
         try:
@@ -212,7 +235,8 @@ async def handle(request):
         remaining = None
         if not row.get('nutrition_warning') and isinstance(goal.get("calories"), (int, float)) and isinstance(totals["calories"], (int, float)):
             remaining = goal["calories"] - totals["calories"]
-        return {"status": "read", "date": day.isoformat(), "totals": totals, "energy_unit": "kcal", "nutrition_warning": row.get('nutrition_warning'), "remaining_calories": remaining, "source": "SparkyFitness native summary and effective goal", "unsupported_nutrients": {k: None for k in UNSUPPORTED}}
+        query = 'remaining' if re.search(r'\b(?:left|remaining)\b',text) else 'protein' if 'protein' in text else 'calories'
+        return {"status": "read", "query":query, "date": day.isoformat(), "totals": totals, "energy_unit": "kcal", "nutrition_warning": row.get('nutrition_warning'), "remaining_calories": remaining, "source": "SparkyFitness native summary and effective goal", "unsupported_nutrients": {k: None for k in UNSUPPORTED}}
     if selection is None and (request.nutrition_history or text.startswith("what did i eat")):
         history = request.nutrition_history
         try:
@@ -255,6 +279,10 @@ async def handle(request):
     prepared = await prepare(selection)
     if "payload" not in prepared:
         return prepared
+    return queue_prepared(request, prepared)
+
+
+def queue_prepared(request, prepared):
     payload = prepared["payload"]
     fingerprint = hashlib.sha256(json.dumps([context_key(request), payload], sort_keys=True).encode()).hexdigest()
     identity = hashlib.sha256((request.request_id or fingerprint).encode()).hexdigest()

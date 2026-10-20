@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+from contextvars import ContextVar
 from pathlib import Path
 
 import httpx
@@ -11,8 +12,9 @@ READ_TOOLS = frozenset({
     "sparky_search_foods", "sparky_get_food_details", "sparky_get_food_diary",
     "sparky_get_nutrition_summary", "sparky_get_goal_snapshot",
 })
-WRITE_ACTIONS = frozenset({"log_food", "update_entry", "delete_entry"})
+WRITE_ACTIONS = frozenset({"log_food", "update_entry", "delete_entry", "log_water"})
 PROTOCOL = "2025-11-25"
+request_tools = ContextVar('nutrition_request_tools', default=None)
 
 
 class NutritionUnavailable(RuntimeError):
@@ -63,6 +65,9 @@ class SparkyMCP:
                 raise NutritionUnavailable("Nutrition write is outside the allowlist")
         elif name not in READ_TOOLS:
             raise NutritionUnavailable("Nutrition read is outside the allowlist")
+        tools=request_tools.get()
+        if tools is not None:
+            tools.append(name)
         async with self.lock:
             if not self.ready:
                 init = await self.rpc("initialize", {"protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": {"name": "jarvis-nutrition", "version": "1"}})

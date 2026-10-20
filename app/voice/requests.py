@@ -35,6 +35,9 @@ class VoiceRequest(BaseModel):
     area: str | None = None
     satellite: str | None = None
     listener: str | None = None
+    conversation_id: str | None = Field(default=None, min_length=1, max_length=128)
+    origin: str | None = Field(default=None, max_length=64)
+    user_context: str | None = Field(default=None, max_length=128)
     request_id: str | None = Field(default=None, min_length=1, max_length=100)
     nutrition: NutritionSelection | None = None
     nutrition_history: NutritionHistory | None = None
