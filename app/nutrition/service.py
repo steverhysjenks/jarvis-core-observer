@@ -17,7 +17,7 @@ TZ = ZoneInfo("Europe/London")
 STATE_PATH = Path("/var/lib/jarvis-core/nutrition-receipts.sqlite")
 CORE = ("calories", "protein", "carbs", "fat")
 UNSUPPORTED = ("sodium", "potassium", "fiber", "sugar", "vitamin_a", "vitamin_c", "calcium", "iron", "cholesterol", "saturated_fat", "polyunsaturated_fat", "monounsaturated_fat", "trans_fat")
-INTENT = re.compile(r"^(?:i(?:'ve| have)? (?:eaten|had|ate)\b|log\b|how (?:many calories|much protein)\b|what did i eat\b|(?:remove|delete|change)\b.*\b(?:logged|toast|chocolate|breakfast|lunch|dinner|snack)\b|(?:search|find)\b.*\b(?:food|nutrition)\b)", re.I)
+INTENT = re.compile(r"^(?:nutrition\b|i(?:'ve| have)? (?:eaten|had|ate)\b|log\b|how (?:many calories|much protein)\b|what did i eat\b|(?:remove|delete|change)\b.*\b(?:logged|toast|chocolate|breakfast|lunch|dinner|snack)\b|(?:search|find)\b.*\b(?:food|nutrition)\b)", re.I)
 
 
 def clarify(message):
@@ -111,7 +111,7 @@ async def prepare(selection):
             if str(entry.get("unit", "")).rstrip("s") != selection.unit.rstrip("s"):
                 return clarify("Please correct it using the entry's original unit, so its nutrition reference is preserved.")
             payload.update(quantity=selection.quantity, unit=selection.unit)
-        return {"payload": payload, "description": f"{action} for {entry.get('food_name', entry.get('name', 'selected food'))} on {selection.entry_date}"}
+        return {"payload": payload, "description": f"{action} for {entry.get('food_name', entry.get('name', 'selected food'))}, currently {entry.get('quantity')} {entry.get('unit')}, on {selection.entry_date} at {entry.get('entry_time')}; entry {entry['id']}"}
     if not selection.food_id or selection.quantity is None or not selection.unit or not selection.consumed_at or not selection.meal:
         return clarify("Which product, how much, which meal, and when did you eat it? Please select the food and give its actual consumption time.")
     if selection.meal == "dinner":
@@ -132,7 +132,7 @@ async def prepare(selection):
             return clarify("What is the weight of one packet? I won't guess a pack size.")
         amount, unit = amount * selection.pack_weight_g, "g"
     variant = choose_variant(food, str(selection.variant_id) if selection.variant_id else None, unit)
-    if not variant or str(variant.get("serving_unit", "")).rstrip("s") != unit.rstrip("s"):
+    if not variant or (str(variant.get("serving_unit", "")).rstrip("s") != unit.rstrip("s") and not (unit == 'serving' and selection.variant_id)):
         return clarify("Which serving variant matches that unit? I won't convert slices, grams or servings without a defined reference.")
     if any(variant.get(k) is None for k in CORE):
         return clarify("The selected serving has incomplete calorie or macro data.")
@@ -216,15 +216,11 @@ async def handle(request):
         result = await sparky.call("sparky_search_foods", {"query": query, "limit": 10})
         return {"status": "read", "foods": scrub(result), "source": "SparkyFitness saved foods"}
     if selection is None:
-        if "dinner" in text:
-            return clarify("By dinner, do you mean lunch or your evening meal, and which food did you eat?")
-        if "rest of" in text:
-            return clarify("Which packet, its total weight, and how much have you already eaten? I won't guess what remains.")
-        if text.startswith(("remove ", "delete ")):
-            return clarify("Which dated diary entry should I remove? I will ask for confirmation after showing the exact entry.")
-        if text.startswith("change "):
-            return clarify("Which dated breakfast entry should change, and is three slices the corrected total? Please select the entry.")
-        return clarify("Which exact product and serving size, which meal, and what consumption date and time? A packet or slice needs a defined weight/serving reference.")
+        from app.nutrition.dialogue import resolve
+        resolved = await resolve(request)
+        if isinstance(resolved, dict):
+            return resolved
+        selection = resolved
     prepared = await prepare(selection)
     if "payload" not in prepared:
         return prepared

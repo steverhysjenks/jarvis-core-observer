@@ -22,3 +22,17 @@ A SQLite transaction commits `in_flight` before sending a write. A timeout or un
 Use the existing protected-main GitLab validation, isolated regression, package, manual `deploy_production` and production acceptance workflow. No SSH application deployment. Configure credential paths before enabling. Validate real temporary labelled food entry, totals, correction and deletion through deployed Core; offline tests alone do not establish acceptance.
 
 Disable `NUTRITION_ENABLED` and restart Core to withdraw only this capability, or use the existing release rollback. Preserve receipts and credentials across rollback. Existing HA, Music Assistant, observer and LOCAL/DESKTOP/CLOUD routing remain in place. Do not enable SparkyAI/cloud ingestion as part of this deployment.
+
+## Bounded voice clarification
+
+Core now resolves explicit follow-up details without changing Router or sending health data to a model. Start with a supported food request, then prefix follow-ups with `nutrition:` so a pending food dialogue cannot steal unrelated music commands. For example:
+
+1. `I had half a packet of biscuits.`
+2. `nutrition: product Exact saved biscuit name; snack; today at 12:30; packet weighs 300 g`
+3. Confirm the exact food, computed grams, meal and timestamp using the returned confirmation ID or `yes` when exactly one action is pending.
+
+Saved-food and diary ambiguity returns numbered choices. Reply `nutrition: choice 2` for foods, `nutrition: entry 2` for dated diary entries, or `nutrition: variant 2; 1 serving` for an explicitly defined serving reference. A correction such as changing toast to three slices treats three as the corrected total. Exact dated entries and explicit confirmation remain required. `nutrition cancel` cancels pending actions without touching the diary.
+
+Replies are deliberately bounded: explicit product names, positive amounts with supported units, unambiguous meals, today/yesterday/ISO dates, and 24-hour HH:MM consumption times. `just now` is an explicit consumption-time instruction. “Dinner” still requires lunch/evening clarification; “half past twelve” asks for an unambiguous clock time. “The rest” requires actual remaining grams and product identity, rather than guessing a packet association. Missing slice weights are not inferred. Numbered choices are valid only within the same trusted listener/area/satellite context for ten minutes.
+
+An explicit native variant can now accept serving counts even when its reference unit is grams; Sparky performs the calculation. DST-ambiguous/skipped local times require the existing offset-aware structured request, rather than guessing an offset. The dialogue stores private ten-minute drafts in the same mode-0600 receipt database; include it in CT122 backup coverage. Structured inputs remain supported for callers that already resolved the selection.
