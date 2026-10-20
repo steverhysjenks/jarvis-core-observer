@@ -2,11 +2,13 @@ from app.capabilities.base import Capability
 from app.capabilities.models import CapabilityResult
 from app.capabilities.music import music_capability
 from app.capabilities.replay import replay_capability
+from app.capabilities.nutrition import nutrition_capability
 from app.voice.requests import VoiceRequest
 
 
 CAPABILITIES: tuple[Capability, ...] = (
     replay_capability,
+    nutrition_capability,
     music_capability,
 )
 

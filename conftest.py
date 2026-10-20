@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parent
 _temporary_storage = tempfile.TemporaryDirectory(prefix="jarvis-tests-")
 ISOLATION_ROOT = Path(_temporary_storage.name).resolve()
 SAFE_MODULES = {
+    "test_nutrition.py",
     "test_action_executor.py", "test_action_policy.py", "test_activity_detector.py",
     "test_areas.py", "test_availability.py", "test_bounded_judgement.py",
     "test_departure_behaviour.py", "test_detector_orchestration.py",
@@ -27,6 +28,7 @@ os.environ.update({
     "MUSIC_ASSISTANT_TOKEN": "isolated-test-placeholder",
     "OLLAMA_URL": "http://ollama.invalid", "JUDGEMENT_MODEL": "test-only",
     "OBSERVER_MODE": "shadow", "JARVIS_CORE_API_KEY": "isolated-test-placeholder",
+    "NUTRITION_ENABLED": "false",
 })
 
 
