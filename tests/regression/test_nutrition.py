@@ -169,3 +169,106 @@ async def test_incomplete_native_day_and_energy_units_are_not_misrepresented(mon
     row['energy_unit'] = 'kJ'
     with pytest.raises(NutritionUnavailable):
         await service.handle(VoiceRequest(text='How much protein have I eaten?'))
+
+@pytest.mark.asyncio
+async def test_voice_packet_followups_resolve_without_guessing(monkeypatch):
+    from app.nutrition import dialogue
+    food = {'id': FOOD, 'name': 'Defined crisps', 'is_custom': True,
+            'variants': [{'id': VARIANT, 'serving_size': 100, 'serving_unit': 'g',
+                          'calories': 519, 'protein': 6.4, 'carbs': 52, 'fat': 31}]}
+    async def native(name, arguments, **kwargs):
+        assert not kwargs.get('write')
+        return {'data':[food], 'has_more':False} if name=='sparky_search_foods' else food
+    monkeypatch.setattr(service.sparky,'call',native)
+    request = VoiceRequest(text='I had half a packet of biscuits.',listener='owner')
+    assert (await service.handle(request))['status']=='clarification_required'
+    followup = request.model_copy(update={'text':'nutrition: product Defined crisps; snack; 2026-10-18 at 08:15; packet weighs 45 g'})
+    result = await service.handle(followup)
+    assert result['status']=='confirmation_required'
+    with service.connection() as db:
+        payload = __import__('json').loads(db.execute('SELECT payload FROM receipts WHERE id=?',(result['confirmation_id'],)).fetchone()[0])
+    assert payload['quantity']==22.5 and payload['unit']=='g' and payload['entry_time']=='08:15'
+    # Context isolation: another listener cannot inherit the packet fraction.
+    other = await service.handle(followup.model_copy(update={'listener':'other'}))
+    assert other['status']=='clarification_required'
+
+@pytest.mark.asyncio
+async def test_voice_dinner_selection_does_not_infer_date_or_time(monkeypatch):
+    from app.nutrition import dialogue
+    request = VoiceRequest(text='Log my dinner at half past twelve.')
+    first = await dialogue.resolve(request)
+    assert 'lunch' in first['message']
+    second = await dialogue.resolve(request.model_copy(update={'text':'nutrition: lunch'}))
+    assert second['status']=='clarification_required'
+    draft=dialogue.load(service.context_key(request))
+    assert draft['meal']=='lunch' and 'clock' not in draft and 'date' not in draft
+
+@pytest.mark.asyncio
+async def test_voice_numbered_choice_requires_existing_options(monkeypatch):
+    from app.nutrition import dialogue
+    request = VoiceRequest(text='nutrition: choice 99')
+    assert (await dialogue.resolve(request))['status']=='clarification_required'
+    assert not (await nutrition_capability.handle(VoiceRequest(text='Play jazz'))).claimed
+
+@pytest.mark.asyncio
+async def test_explicit_native_serving_reference_is_supported(monkeypatch):
+    async def native(*args,**kwargs):
+        return {'id':FOOD,'name':'Defined serving','is_custom':True,
+                'variants':[{'id':VARIANT,'serving_size':35,'serving_unit':'g',
+                             'calories':80,'protein':3,'carbs':15,'fat':1}]}
+    monkeypatch.setattr(service.sparky,'call',native)
+    payload=(await service.prepare(selected(unit='serving',quantity=2,variant_id=VARIANT)))['payload']
+    assert payload['quantity']==2 and payload['unit']=='serving' and payload['variant_id']==VARIANT
+
+@pytest.mark.asyncio
+async def test_voice_correction_resolves_dated_entry_and_new_total(monkeypatch):
+    from app.nutrition import dialogue
+    async def native(name,args,**kwargs):
+        return {'food_entries':[{'id':ENTRY,'food_name':'Defined toast','quantity':2,'unit':'slice','entry_time':'08:15'}], 'has_more':False}
+    monkeypatch.setattr(service.sparky,'call',native)
+    request=VoiceRequest(text='Change the number of slices of toast I had for breakfast to three')
+    assert (await dialogue.resolve(request))['status']=='clarification_required'
+    resolved=await dialogue.resolve(request.model_copy(update={'text':'nutrition: product Defined toast; today'}))
+    assert resolved.quantity==3 and resolved.unit=='slice' and str(resolved.entry_id)==ENTRY
+
+@pytest.mark.asyncio
+async def test_voice_cancel_does_not_mutate_diary(monkeypatch):
+    from app.nutrition import dialogue
+    request=VoiceRequest(text='nutrition cancel')
+    assert (await dialogue.resolve(request))['status']=='cancelled'
+    assert dialogue.load(service.context_key(request))=={}
+
+
+@pytest.mark.parametrize('amount,expected',[('0.5 packet',0.5),('.5 packet',0.5),('1/2 packet',0.5),('half a packet',0.5),('two slices',2)])
+def test_voice_portion_parser_never_reinterprets_fraction(amount,expected):
+    from app.nutrition.dialogue import extract
+    assert extract({'action':'log_food'},amount)['quantity']==expected
+
+@pytest.mark.parametrize('amount',['-2 g','-two slices','one and a half packets','between 1 and 2 servings'])
+def test_ambiguous_amounts_are_rejected(amount):
+    from app.nutrition.dialogue import extract
+    with pytest.raises(ValueError): extract({'action':'log_food'},amount)
+
+@pytest.mark.asyncio
+async def test_unknown_followup_cannot_reuse_complete_draft():
+    from app.nutrition import dialogue
+    request=VoiceRequest(text='nutrition: unrelated words')
+    dialogue.store(service.context_key(request),{'action':'log_food','food_id':FOOD,'quantity':1,'unit':'g','meal':'snack','date':'2026-10-18','clock':'08:15'})
+    assert (await dialogue.resolve(request))['status']=='clarification_required'
+
+@pytest.mark.parametrize('amount',['2 slices and 3 g','0:15pm'])
+def test_multiple_portions_and_invalid_am_pm_are_not_silently_selected(amount):
+    from app.nutrition.dialogue import extract
+    with pytest.raises(ValueError): extract({'action':'log_food'},amount)
+
+@pytest.mark.asyncio
+async def test_confirmation_shows_serving_reference_and_corrected_total(monkeypatch):
+    async def native(name,args,**kwargs):
+        if name=='sparky_get_food_diary':
+            return {'food_entries':[{'id':ENTRY,'food_name':'Defined toast','quantity':2,'unit':'slice','entry_time':'08:15'}]}
+        return {'id':FOOD,'name':'Defined serving','is_custom':True,'variants':[{'id':VARIANT,'serving_size':35,'serving_unit':'g','calories':80,'protein':3,'carbs':15,'fat':1}]}
+    monkeypatch.setattr(service.sparky,'call',native)
+    serving=await service.prepare(selected(unit='serving',quantity=2,variant_id=VARIANT))
+    assert 'serving reference 35 g' in serving['description']
+    correction=await service.prepare(NutritionSelection(action='update_entry',entry_id=ENTRY,entry_date='2026-10-18',quantity=3,unit='slice'))
+    assert 'change total to 3 slice' in correction['description']

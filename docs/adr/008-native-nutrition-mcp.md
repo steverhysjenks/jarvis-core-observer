@@ -10,4 +10,5 @@ The Core API remains the trusted authenticated caller boundary for a single conf
 
 Durable private SQLite receipts reserve each write before transmission and retain uncertain outcomes for reconciliation. Completed receipts suppress retry duplication; a genuinely new identical consumption needs a distinct request ID. No automatic retry follows an uncertain write. Native micro-nutrient zeros are not sufficient provenance.
 
-Feature flag defaults off. Existing protected-main manual deployment and production acceptance remain required. A real temporary diary write, correction, totals comparison and cleanup through deployed Core remain acceptance gates. A future conversational selection layer can populate the strict request schema; it must not invent values or bypass confirmation.
+Feature flag defaults off. Existing protected-main manual deployment and production acceptance remain required. A real temporary diary write, correction, totals comparison and cleanup through deployed Core remain acceptance gates. A bounded Core dialogue now populates the strict schema from explicit nutrition: follow-ups and numbered native choices. It does not invent values or bypass confirmation; unrelated music requests are not intercepted by pending food dialogue.
+
