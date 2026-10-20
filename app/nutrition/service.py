@@ -29,6 +29,7 @@ def context_key(request):
 
 
 def connection():
+    STATE_PATH.touch(mode=0o600, exist_ok=True)
     db = sqlite3.connect(STATE_PATH, timeout=5)
     db.row_factory = sqlite3.Row
     db.execute("CREATE TABLE IF NOT EXISTS receipts (id TEXT PRIMARY KEY, context TEXT NOT NULL, fingerprint TEXT NOT NULL, payload TEXT NOT NULL, state TEXT NOT NULL, result TEXT, expires REAL NOT NULL)")
