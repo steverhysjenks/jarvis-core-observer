@@ -50,3 +50,26 @@ Router/Core logs correlate native read and write operations using request IDs an
 A live synthetic general-knowledge request passed the unchanged Router fallback and answered Paris. Existing HA control/music/general behavior has offline regression coverage; physical actuation and audible music are not claimed from mocks. Core health was healthy; Observer remained running/live with successful cycles and no last error after HA recovered. All existing nutrition containers remained healthy; Mealie retained its uptime. No new service/container, dependency or inference server was introduced.
 
 **Physical EchoMuse acceptance remains pending.** HA API calls are not microphone tests. The user has been asked to repeat the six reported phrases and a dinner-to-lunch clarification without nutrition:. Reconcile actual audible results with the physical Office EchoMuse pipeline traces and Router/Core metadata before declaring Task 5 complete. Leave the physical water request unconfirmed unless real consumption is intended; preparation alone does not write hydration data.
+
+## Physical routing acceptance and spoken-date correction
+
+The user performed the actual Office EchoMuse microphone tests and reported results. HA traces confirm Faster Whisper transcription, conversation.jarvis_router dispatch, and identical intent speech/Piper TTS input. All runs retained conversation ID 01M5DFNP7KAJYQ50F3HE4P9W7A. No personal totals are recorded here.
+
+| Run start, Europe/London | HA run ID | Result / native MCP calls |
+|---|---|---|
+| 21:22:31 | 01M5DFNP7KNHJACPEAPWXQZ35V | Calorie read; 2 calls; transcription omitted today and still matched |
+| 21:23:06 | 01M5DFPR74MJKE2YY9GR59GDCZ | Protein read; 2 calls |
+| 21:23:57 | 01M5DFRAH5X74YZ5A732WDXDAF | Remaining allowance; 2 calls |
+| 21:25:29 | 01M5DFV3NM1N98MVYM6YM208GQ | Accurate empty yesterday diary; 1 call |
+| 21:26:06 | 01M5DFW8A4GKQHTHJ787N5FN09 | Configured target; 1 call; no measurements requested |
+| 21:26:42 | 01M5DFXBCPCTMN4N5AYKESGYCJ | Separate 750 ml water confirmation; 0 calls, no write |
+| 21:26:56 | 01M5DFXSAV20WEVS5WS7K6FYY6 | Physical Yes; completed; 1 call; one corresponding native water record independently verified and retained |
+| 21:28:06 | 01M5DFZX15A8FV8TBZGR17KE6P | Dinner ambiguity clarified; 0 calls |
+| 21:28:13 | 01M5DG04C4H5Z9NBE046MKMD2K | Unprefixed lunch continued asking for food; 0 calls |
+| 21:28:21 | 01M5DG0BXMABP7VJ3FASPD0JKX | Unprefixed Cancel acknowledged no diary changes; 0 calls |
+
+Correlated Router request IDs include calorie 43820fae305640bca864a96417369bdb, protein 162443b6803549ce8788b85b622f7173, remaining 427e1456c6474820885368df89350fa3, water preparation 01106274ab9e4b57a9ebfca486b7ac14, confirmed water 8784839e8e294d9d84fee6c1422db872 and cancellation 256d25d56fbb4da4b5920e74a05cc842. Confirmed user consumption is not deleted as an automated fixture.
+
+Routing, native reads, physical confirmation and unprefixed continuation/cancellation passed. The user found the ending difficult to understand and heard dash. The trace establishes the cause: Core appended ISO dates, and HA sent those same strings to TTS. The user requested removing repetitive spoken dates and explicitly excluded EchoMuse audio-setting troubleshooting.
+
+The focused Core correction keeps structured dates, native calculations, confirmation and receipts unchanged. Current-day totals use today, the target omits the ISO suffix, remaining allowance simply states calories left, and water confirmation/acknowledgement omits routine date suffixes. Historical totals retain yesterday or a human-readable date, avoiding ISO punctuation without silently substituting today. No Router/HA code, firmware or audio setting changes are needed. Deploy through the existing Core gate and verify two short physical readbacks before closing the remaining speech correction.

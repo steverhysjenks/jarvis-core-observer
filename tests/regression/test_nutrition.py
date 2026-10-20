@@ -17,7 +17,7 @@ ENTRY = '33333333-3333-4333-8333-333333333333'
 @pytest.mark.parametrize('text,spoken', [
     (' How many calories have I consumed today?', '300 calories'),
     ('HOW MUCH PROTEIN HAVE I CONSUMED TODAY?', '12 grams of protein'),
-    ('How many calories do I have left today?', '1,700 calories remaining'),
+    ('How many calories do I have left today?', '1,700 calories left'),
     ('What is my daily calorie target?', '2,000 calories'),
 ])
 async def test_echomuse_reads_have_actual_spoken_values(text, spoken, monkeypatch):
@@ -83,6 +83,31 @@ def test_missing_results_fail_closed():
     from app.nutrition.presentation import present
     assert 'could not verify' in present({'status':'unexpected'})
     assert 'incomplete' in present({'status':'read','query':'remaining','totals':{},'remaining_calories':None})
+
+@pytest.mark.parametrize('query', ['calories','protein','remaining','goal'])
+def test_routine_speech_omits_iso_dates_and_verbose_allowance_explanation(query):
+    from app.nutrition.presentation import present
+    today=datetime.now(service.TZ).date().isoformat()
+    result={'status':'read','query':query,'date':today,'totals':{'calories':300,'protein':12},'remaining_calories':1700,'effective_goal':2000}
+    spoken=present(result)
+    assert today not in spoken and 'configured effective' not in spoken
+    assert 'using your' not in spoken
+    assert ('12 grams' if query=='protein' else '2,000 calories' if query=='goal' else '1,700 calories left' if query=='remaining' else '300 calories') in spoken
+
+@pytest.mark.parametrize('status,expected', [('confirmation_required','Log 750 millilitres of water. Confirm?'),('completed','Logged 750 millilitres of water.')])
+def test_water_speech_short_but_still_requires_confirmation(status,expected):
+    from app.nutrition.presentation import present
+    result={'status':status,'action':'log_water','amount_ml':750,'date':datetime.now(service.TZ).date().isoformat()}
+    assert present(result)==expected
+
+def test_historical_speech_retains_date_context_without_iso_punctuation():
+    from datetime import timedelta
+    from app.nutrition.presentation import present, spoken_day
+    yesterday=(datetime.now(service.TZ).date()-timedelta(days=1)).isoformat()
+    speech=present({'status':'read','query':'calories','date':yesterday,'totals':{'calories':300}})
+    assert 'yesterday' in speech and yesterday not in speech
+    assert spoken_day('2000-01-01')=='on 1 January 2000'
+    assert spoken_day(None)=='for the requested day'
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('status,expected_type,continuing', [('read','query_answer',False),('clarification_required','action_done',True),('unavailable','error',False)])

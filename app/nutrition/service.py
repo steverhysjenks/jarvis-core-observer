@@ -212,7 +212,10 @@ async def handle(request):
         dates=re.findall(r'\b\d{4}-\d{2}-\d{2}\b',text)
         if dates or ('today' in text and 'yesterday' in text):
             return clarify('Please specify only today or yesterday for this water entry.')
-        return queue_prepared(request, {'payload':{'action':'log_water','amount_ml':amount,'entry_date':day.isoformat()}, 'description':f'Log {amount:g} millilitres of water for {day}, separately from food'})
+        result=queue_prepared(request, {'payload':{'action':'log_water','amount_ml':amount,'entry_date':day.isoformat()}, 'description':f'Log {amount:g} millilitres of water for {day}, separately from food'})
+        if result['status']=='confirmation_required':
+            result.update(action='log_water', amount_ml=amount, date=day.isoformat())
+        return result
     if selection is None and re.match(r'how (?:many calories|much protein) (?:have i|did i|do i)\b', text):
         dates = re.findall(r'\b\d{4}-\d{2}-\d{2}\b', text)
         try:
