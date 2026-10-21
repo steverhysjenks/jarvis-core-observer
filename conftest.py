@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parent
 _temporary_storage = tempfile.TemporaryDirectory(prefix="jarvis-tests-")
 ISOLATION_ROOT = Path(_temporary_storage.name).resolve()
 SAFE_MODULES = {
+    "test_mealie.py",
     "test_nutrition_summary.py",
     "test_nutrition.py",
     "test_action_executor.py", "test_action_policy.py", "test_activity_detector.py",
@@ -30,6 +31,8 @@ os.environ.update({
     "OLLAMA_URL": "http://ollama.invalid", "JUDGEMENT_MODEL": "test-only",
     "OBSERVER_MODE": "shadow", "JARVIS_CORE_API_KEY": "isolated-test-placeholder",
     "NUTRITION_ENABLED": "false",
+    "MEALIE_ENABLED": "false",
+    "MEALIE_HA_CONFIG_ENTRY_ID": "isolated-mealie-entry",
 })
 
 

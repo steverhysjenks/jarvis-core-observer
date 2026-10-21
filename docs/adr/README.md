@@ -10,3 +10,4 @@ These ADRs capture the decisions that shaped Jarvis Core rather than only the fi
 | 004 | Separate communication judgement from delivery policy |
 | 005 | Preserve UNKNOWN and fail closed where feasibility depends on it |
 | 006 | Use semantic occurrence identity for proactive lifecycle |
+| 011 | Reuse HA for deterministic read-only Mealie recipe lookup |
