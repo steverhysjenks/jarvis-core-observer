@@ -14,6 +14,9 @@ INGREDIENTS = re.compile(
 def recognise(text):
     text = re.sub(r"^jarvis[,:]?\s+", "", text.strip(), flags=re.I)
     text = re.sub(r"[.!?]+$", "", text).strip()
+    # Only one bounded request: do not absorb another sentence/action as a name.
+    if re.search(r"[.!?;\r\n]", text):
+        return None
     for intent, pattern in (("ingredients", INGREDIENTS), ("lookup", LOOKUP)):
         match = pattern.fullmatch(text)
         if match and 0 < len(match[1].strip()) <= 200:

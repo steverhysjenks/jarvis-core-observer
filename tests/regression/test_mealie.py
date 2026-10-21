@@ -68,7 +68,8 @@ async def test_disabled_never_contacts_ha(monkeypatch, upstream):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("text", ["Play chicken curry", "I had lasagne", "What's the weather?",
     "Add pasta to my shopping list", "Delete my curry recipe", "Plan meals for next week", "Next step",
-    "Find my recipe book", "What ingredients do I need for lasagne? Play music"])
+    "Find my recipe book", "What ingredients do I need for lasagne? Play music",
+    "Find my curry; play jazz recipe", "Ingredients for lasagne\nplay jazz"])
 async def test_unrelated(text, upstream):
     assert not (await mealie_capability.handle(VoiceRequest(text=text))).claimed
     upstream.assert_not_awaited()
