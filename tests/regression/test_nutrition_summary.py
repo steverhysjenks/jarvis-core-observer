@@ -13,6 +13,18 @@ TOKEN = "synthetic-summary-token-for-offline-tests-only"
 DAY = "2026-10-21"
 
 
+def test_deployment_readiness_resolves_included_summary_routes():
+    from deployment.readiness import verify_routes
+    from app.observer.runner import get_observer_status
+    verify_routes(app)
+    assert not get_observer_status()["running"]
+    class Missing:
+        def openapi(self):
+            return {"paths": {"/health": {}, "/observer/status": {}}}
+    with pytest.raises(RuntimeError, match="endpoints are missing"):
+        verify_routes(Missing())
+
+
 @pytest.fixture(autouse=True)
 def setup_summary(monkeypatch, tmp_path):
     token = tmp_path / "summary.token"
