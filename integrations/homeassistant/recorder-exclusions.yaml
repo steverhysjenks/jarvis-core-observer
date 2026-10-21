@@ -1,0 +1,12 @@
+# Merge into recorder.exclude.entities BEFORE activating REST sensors.
+exclude:
+  entities:
+    - sensor.sparky_daily_calorie_goal
+    - sensor.sparky_calories_consumed
+    - sensor.sparky_calories_remaining
+    - sensor.sparky_calorie_progress
+    - sensor.sparky_protein_consumed
+    - sensor.sparky_carbs_consumed
+    - sensor.sparky_fat_consumed
+    - sensor.sparky_14_day_average_calories
+    - sensor.sparky_14_day_logged_days

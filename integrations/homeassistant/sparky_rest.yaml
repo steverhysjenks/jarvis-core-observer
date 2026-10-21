@@ -1,0 +1,125 @@
+# Include as the top-level rest: list. Never put the token here.
+- resource: http://192.168.0.62:8000/nutrition/summary/today
+  method: GET
+  scan_interval: 180
+  timeout: 25
+  headers:
+    Authorization: !secret jarvis_nutrition_summary_authorization
+  sensor:
+    - name: Sparky Daily Calorie Goal
+      unique_id: jarvis_sparky_daily_calorie_goal
+      unit_of_measurement: "kcal"
+      state_class: measurement
+      value_template: "{{ value_json.get('goal_kcal') }}"
+      availability: "{{ value_json is defined and value_json.get('status') == 'valid' and value_json.get('goal_kcal') is number and (as_timestamp(now()) - as_timestamp(value_json.get('updated_at'), 0)) < 240 and value_json.get('date') == now().strftime('%Y-%m-%d') }}"
+      json_attributes:
+        - date
+        - updated_at
+        - status
+        - has_entries
+    - name: Sparky Calories Consumed
+      unique_id: jarvis_sparky_calories_consumed
+      unit_of_measurement: "kcal"
+      state_class: measurement
+      value_template: "{{ value_json.get('consumed_kcal') }}"
+      availability: "{{ value_json is defined and value_json.get('status') == 'valid' and value_json.get('consumed_kcal') is number and (as_timestamp(now()) - as_timestamp(value_json.get('updated_at'), 0)) < 240 and value_json.get('date') == now().strftime('%Y-%m-%d') }}"
+      json_attributes:
+        - date
+        - updated_at
+        - status
+        - has_entries
+    - name: Sparky Calories Remaining
+      unique_id: jarvis_sparky_calories_remaining
+      unit_of_measurement: "kcal"
+      state_class: measurement
+      value_template: "{{ value_json.get('remaining_kcal') }}"
+      availability: "{{ value_json is defined and value_json.get('status') == 'valid' and value_json.get('remaining_kcal') is number and (as_timestamp(now()) - as_timestamp(value_json.get('updated_at'), 0)) < 240 and value_json.get('date') == now().strftime('%Y-%m-%d') }}"
+      json_attributes:
+        - date
+        - updated_at
+        - status
+        - has_entries
+    - name: Sparky Calorie Progress
+      unique_id: jarvis_sparky_calorie_progress
+      unit_of_measurement: "%"
+      state_class: measurement
+      value_template: "{{ value_json.get('progress_percent') }}"
+      availability: "{{ value_json is defined and value_json.get('status') == 'valid' and value_json.get('progress_percent') is number and (as_timestamp(now()) - as_timestamp(value_json.get('updated_at'), 0)) < 240 and value_json.get('date') == now().strftime('%Y-%m-%d') }}"
+      json_attributes:
+        - date
+        - updated_at
+        - status
+        - has_entries
+    - name: Sparky Protein Consumed
+      unique_id: jarvis_sparky_protein_consumed
+      unit_of_measurement: "g"
+      state_class: measurement
+      value_template: "{{ value_json.get('protein_g') }}"
+      availability: "{{ value_json is defined and value_json.get('status') == 'valid' and value_json.get('protein_g') is number and (as_timestamp(now()) - as_timestamp(value_json.get('updated_at'), 0)) < 240 and value_json.get('date') == now().strftime('%Y-%m-%d') }}"
+      json_attributes:
+        - date
+        - updated_at
+        - status
+        - has_entries
+    - name: Sparky Carbs Consumed
+      unique_id: jarvis_sparky_carbs_consumed
+      unit_of_measurement: "g"
+      state_class: measurement
+      value_template: "{{ value_json.get('carbs_g') }}"
+      availability: "{{ value_json is defined and value_json.get('status') == 'valid' and value_json.get('carbs_g') is number and (as_timestamp(now()) - as_timestamp(value_json.get('updated_at'), 0)) < 240 and value_json.get('date') == now().strftime('%Y-%m-%d') }}"
+      json_attributes:
+        - date
+        - updated_at
+        - status
+        - has_entries
+    - name: Sparky Fat Consumed
+      unique_id: jarvis_sparky_fat_consumed
+      unit_of_measurement: "g"
+      state_class: measurement
+      value_template: "{{ value_json.get('fat_g') }}"
+      availability: "{{ value_json is defined and value_json.get('status') == 'valid' and value_json.get('fat_g') is number and (as_timestamp(now()) - as_timestamp(value_json.get('updated_at'), 0)) < 240 and value_json.get('date') == now().strftime('%Y-%m-%d') }}"
+      json_attributes:
+        - date
+        - updated_at
+        - status
+        - has_entries
+- resource: http://192.168.0.62:8000/nutrition/summary/history
+  method: GET
+  scan_interval: 7200
+  timeout: 25
+  headers:
+    Authorization: !secret jarvis_nutrition_summary_authorization
+  sensor:
+    - name: Sparky 14 Day Average Calories
+      unique_id: jarvis_sparky_14_day_average_calories
+      unit_of_measurement: "kcal"
+      state_class: measurement
+      value_template: "{{ value_json.get('average_logged_day_kcal') }}"
+      availability: "{{ value_json is defined and value_json.get('status') == 'valid' and value_json.get('average_logged_day_kcal') is number and (as_timestamp(now()) - as_timestamp(value_json.get('updated_at'), 0)) < 7300 }}"
+      json_attributes:
+        - timezone
+        - window_days
+        - start_date
+        - end_date
+        - updated_at
+        - status
+        - average_includes_today
+        - completed_logged_days
+        - today_kcal
+    - name: Sparky 14 Day Logged Days
+      unique_id: jarvis_sparky_14_day_logged_days
+      unit_of_measurement: "days"
+      state_class: measurement
+      value_template: "{{ value_json.get('logged_days') }}"
+      availability: "{{ value_json is defined and value_json.get('status') == 'valid' and value_json.get('logged_days') is number and (as_timestamp(now()) - as_timestamp(value_json.get('updated_at'), 0)) < 7300 }}"
+      json_attributes:
+        - timezone
+        - window_days
+        - start_date
+        - end_date
+        - updated_at
+        - status
+        - average_includes_today
+        - completed_logged_days
+        - today_kcal
+        - days

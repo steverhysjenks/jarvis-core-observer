@@ -26,6 +26,7 @@ from app.voice.requests import VoiceRequest
 from app.voice.replay import repeat_last_announcement
 from app.storage.deliveries import recent_deliveries
 from app.web.notifications import notification_history_html
+from app.nutrition.summary import router as nutrition_summary_router
 
 
 LOCAL_TIMEZONE = ZoneInfo("Europe/London")
@@ -62,6 +63,7 @@ app = FastAPI(
     version="0.7.0",
     lifespan=lifespan,
 )
+app.include_router(nutrition_summary_router)
 
 
 @app.get("/")
