@@ -21,3 +21,13 @@ Availability depends on HA and Mealie. Existing HA token permissions exceed thes
 - https://github.com/home-assistant/core/blob/dev/homeassistant/components/mealie/services.yaml
 - https://github.com/home-assistant/core/blob/dev/homeassistant/components/mealie/services.py
 - Connected HA read-service contract and sample responses verified 21 October 2026; tests use synthetic fixtures only.
+
+## Amendment — single recipe request deadline (21 October 2026)
+
+Keep the two read-only HA services and add a single fixed 15-second monotonic deadline at Mealie capability entry. Pass its absolute time to both adapter reads and enclose lookup/detail/response preparation in asyncio.timeout_at; check expiry before each read and before returning a prepared result. This replaces independent potential 30-second HA waits with one shared cancellation boundary. No Router timeout or unrelated HA consumer changes are needed.
+
+Timeout remains owned by Mealie: return unavailable with reason=deadline_exceeded, not semantic fallback, partial data or retry. External task cancellation propagates. Awaited client work unwinds normally; an already-sent remote read cannot be recalled. No task is shielded or abandoned. The five-second nominal Router margin is for earlier dispatch, cleanup, ASGI serialization and transport; cooperative cancellation cannot guarantee real-time scheduling or successful delivery during network/event-loop failure.
+
+Offline tests cover slow search/detail cancellation, shared absolute deadlines, already-exhausted budgets, rejection after response preparation, normal authoritative ingredients and caller cancellation. Controlled latency/client acceptance remains a deployment gate. This amendment is proposed for review on the deadline branch; it does not authorise a merge, deployment, restart or feature enablement.
+
+Reference: https://docs.python.org/3.13/library/asyncio-task.html#asyncio.timeout_at
