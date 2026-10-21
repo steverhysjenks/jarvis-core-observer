@@ -113,3 +113,7 @@ The dispatcher stops at the first capability that **claims** a request. This kee
 ## Relationship to jarvis-route and LiteLLM
 
 The original V1 multi-LLM router remains a separate concern. `jarvis-route` chooses LOCAL/DESKTOP/CLOUD conversation handling; LiteLLM is a model/API gateway. Jarvis Core provides context, capabilities and proactive intelligence. They can participate in the same end-to-end assistant without pretending to be the same component.
+
+## Saved recipe boundary
+
+[ADR 011](adr/011-read-only-mealie-through-ha.md) reuses the HA adapter for bounded saved-recipe reads. The nutrition provenance reader and its separate token remain unchanged. See [capabilities](capabilities.md#mealie-recipes) for configuration, response shape and rollback.
