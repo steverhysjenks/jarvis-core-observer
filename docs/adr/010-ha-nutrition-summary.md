@@ -8,4 +8,4 @@ Native date-range aggregates supply the full 14-day window in one call. Missing 
 
 Native RESTful HA resources share one payload per polling group (180/7200 seconds). Exclude all nutrition entities from Recorder, with bounded history attributes used directly by a future dashboard. HA owns display only; Sparky retains all historical records and writes. Root-restricted local rollback copies, config validation and approved restart protect existing HA configuration. No dashboard changes are authorized here.
 
-See `docs/nutrition-summary.md` for contracts, failure semantics and recovery. Operational acceptance remains required.
+See `docs/nutrition-summary.md` for contracts, failure semantics and recovery. Operational acceptance passed on deployed commit 4a1184d through pipeline #113, deployment #383, production acceptance #384 and separate native-source/HA/Recorder/failure-recovery checks. The ADR remains a proposal for architectural recordkeeping; acceptance does not imply a separate governance decision.
