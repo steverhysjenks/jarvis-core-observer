@@ -153,3 +153,106 @@ async def test_dispatch_preserves_other_routes(monkeypatch, upstream):
     music_mock.reset_mock()
     assert (await handle_voice_request(VoiceRequest(text="Find my lasagne recipe")))["domain"] == "mealie"
     music_mock.assert_not_awaited()
+
+# Deadline regressions use short cooperative waits and synthetic HA records.
+# They never sleep for the production 15s budget or contact a live service.
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stage', ['get_recipes', 'get_recipe'])
+async def test_deadline_cancels_slow_search_or_detail(stage, monkeypatch, upstream):
+    import asyncio
+    from app.capabilities import mealie as capability
+    monkeypatch.setattr(capability, 'MEALIE_DEADLINE_SECONDS', 0.05)
+    original = upstream.side_effect
+    cancelled = []
+    async def slow(domain, service, data, **kwargs):
+        if service == stage:
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.append(service)
+        return await original(domain, service, data, **kwargs)
+    upstream.side_effect = slow
+    result = await asyncio.wait_for(mealie_capability.handle(VoiceRequest(text='Find my lasagne recipe')), 2)
+    assert result.claimed and not result.handled and result.domain == 'mealie'
+    assert result.result == {'status': 'unavailable', 'reason': 'deadline_exceeded'}
+    assert result.metadata['operation_status'] == 'unavailable' and result.metadata['speech']
+    assert cancelled == [stage]
+    assert upstream.await_count == (1 if stage == 'get_recipes' else 2)
+
+
+@pytest.mark.asyncio
+async def test_search_and_detail_share_one_deadline(monkeypatch, upstream):
+    import asyncio
+    from app.capabilities import mealie as capability
+    deadlines = []
+    original = mealie.mealie_client._read
+    async def read(*args, deadline, **kwargs):
+        deadlines.append(deadline)
+        return await original(*args, deadline=deadline, **kwargs)
+    monkeypatch.setattr(mealie.mealie_client, '_read', read)
+    started = asyncio.get_running_loop().time()
+    result = await mealie_capability.handle(VoiceRequest(text='What ingredients do I need for lasagne?'))
+    assert result.handled and result.result['status'] == 'found'
+    assert len(deadlines) == 2 and deadlines[0] == deadlines[1]
+    assert started + 14.9 <= deadlines[0] <= asyncio.get_running_loop().time() + capability.MEALIE_DEADLINE_SECONDS
+    assert '200 g pasta' in result.metadata['speech']
+    assert capability.MEALIE_DEADLINE_SECONDS == 15.0
+
+
+@pytest.mark.asyncio
+async def test_expired_budget_does_not_start_ha(monkeypatch, upstream):
+    from app.capabilities import mealie as capability
+    monkeypatch.setattr(capability, 'MEALIE_DEADLINE_SECONDS', 0)
+    result = await mealie_capability.handle(VoiceRequest(text='Find my lasagne recipe'))
+    assert result.result['reason'] == 'deadline_exceeded'
+    upstream.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_adapter_rejects_expired_deadline_before_next_read(upstream):
+    import asyncio
+    with pytest.raises(TimeoutError):
+        await mealie.mealie_client.recipe('fixture-id', deadline=asyncio.get_running_loop().time() - 1)
+    upstream.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_response_preparation_cannot_return_an_expired_success(monkeypatch, upstream):
+    from app.capabilities import mealie as capability
+    checked = []
+    def elapsed(deadline):
+        checked.append(deadline)
+        raise TimeoutError()
+    # Simulate the final monotonic check observing expiry after synchronous
+    # preparation; adapter checks remain real and both HA reads complete.
+    monkeypatch.setattr(capability, 'check_deadline', elapsed)
+    result = await mealie_capability.handle(VoiceRequest(text='What ingredients do I need for lasagne?'))
+    assert upstream.await_count == 2 and len(checked) == 1
+    assert not result.handled and result.result['reason'] == 'deadline_exceeded'
+    assert 'recipe' not in result.result
+
+
+@pytest.mark.asyncio
+async def test_external_cancellation_is_not_a_recipe_timeout(monkeypatch, upstream):
+    import asyncio
+    started = asyncio.Event()
+    finished = []
+    async def pending(*args, **kwargs):
+        started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            finished.append(True)
+    upstream.side_effect = pending
+    task = asyncio.create_task(mealie_capability.handle(VoiceRequest(text='Find my lasagne recipe')))
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert finished == [True]
+        assert upstream.await_count == 1
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
