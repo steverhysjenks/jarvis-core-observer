@@ -33,12 +33,12 @@ def recognise(text: str) -> VideoIntent | None:
         body, suffix = target[1], "on " + target[2]
     explicit_movie = bool(re.match(r"(?:the\s+)?(?:movie|film)\s+", body, re.I))
     body = re.sub(r"^(?:the\s+)?(?:movie|film)\s+", "", body, flags=re.I)
-    year_match = re.fullmatch(r"(.+?)\s*\((\d{4})\)", body)
-    year = int(year_match[2]) if year_match else None
+    year_match = re.fullmatch(r"(.+?)\s+(?:\((\d{4})\)|(\d{4}))", body)
+    year = int(year_match[2] or year_match[3]) if year_match else None
     title = year_match[1].strip() if year_match else body.strip()
     if suffix and not re.search(r"\b(?:tv|television)\b", suffix, re.I) and not explicit_movie:
         return None
-    if not (suffix or explicit_movie or operation == "prepare" or title.casefold() in BARE_MOVIES):
+    if not (suffix or explicit_movie or title.casefold() in BARE_MOVIES):
         return None
     # Claim explicit malformed video requests so they cannot become device inference.
     if (not title or len(title) > 180 or re.search(r"[;\r\n.!?/:\\]|\b(?:and then|then|and play|and turn)\b", title, re.I)

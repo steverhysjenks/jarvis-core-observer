@@ -11,6 +11,7 @@ from app.voice.requests import VoiceRequest
     ("Ask Jarvis to play KPop Demon Hunters.", "play", "KPop Demon Hunters", None, None),
     ("Get Forrest Gump ready on the TV.", "prepare", "Forrest Gump", None, "living room"),
     ("Play the film Dune (2021) on the bedroom TV", "play", "Dune", 2021, "bedroom"),
+    ("Play the movie Dune 1984 on the TV", "play", "Dune", 1984, "living room"),
 ])
 def test_recognition(text, operation, title, year, room):
     intent = recognise(text)
@@ -18,6 +19,8 @@ def test_recognition(text, operation, title, year, room):
 
 
 @pytest.mark.parametrize("text", ["Play jazz", "Ask Jarvis to play Taylor Swift", "Pause music",
+    "Play jazz on Spotify", "Play music on the living room speaker",
+    "Get dinner ready", "Get jazz ready",
     "What is two plus two?", "Find my pasta recipe", "How many calories have I had today?"])
 def test_unclaimed(text):
     assert recognise(text) is None
@@ -33,3 +36,29 @@ async def test_disabled_claim_skips_music_and_semantic(monkeypatch):
     assert result["domain"] == "video" and result["operation_status"] == "disabled"
     assert not result["handled"] and result["path"] != "semantic"
     music.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_request_envelope_and_no_lifespan(monkeypatch):
+    import httpx
+    from app.main import app
+    from app.observer.runner import get_observer_status
+    from app.adapters.homeassistant import ha_client
+    from app.adapters.jellyfin import jellyfin_client
+    service = AsyncMock(side_effect=AssertionError("real HA action attempted"))
+    lookup = AsyncMock(side_effect=AssertionError("disabled catalogue accessed"))
+    monkeypatch.setattr(ha_client, "call_service", service)
+    monkeypatch.setattr(jellyfin_client, "lookup", lookup)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://isolated.test") as client:
+        unauthorised = await client.post("/request", json={"text": "Play Forrest Gump on the TV"})
+        assert unauthorised.status_code == 401
+        response = await client.post("/request", headers={"Authorization": "Bearer isolated-test-placeholder"},
+                                     json={"text": "Play Forrest Gump on the TV", "request_id": "fixture-api"})
+    assert response.status_code == 200
+    value = response.json()
+    assert value["domain"] == "video" and value["operation_status"] == "disabled"
+    assert value["handled"] is False and isinstance(value["speech"], str)
+    assert value["continue_conversation"] is False and value["path"] != "semantic"
+    assert not get_observer_status()["running"]
+    service.assert_not_awaited()
+    lookup.assert_not_awaited()

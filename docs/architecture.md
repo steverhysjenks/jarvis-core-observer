@@ -117,3 +117,7 @@ The original V1 multi-LLM router remains a separate concern. `jarvis-route` choo
 ## Saved recipe boundary
 
 [ADR 011](adr/011-read-only-mealie-through-ha.md) reuses the HA adapter for bounded saved-recipe reads. The nutrition provenance reader and its separate token remain unchanged. See [capabilities](capabilities.md#mealie-recipes) for configuration, response shape and rollback.
+
+## Proposed video boundary
+
+[ADR 012](adr/012-bounded-video-through-jellyfin-and-ha.md) adds default-off deterministic movie ownership before music/inference, exact Jellyfin catalogue identity and fixed-entity HA playback with explicit takeover confirmation and strict playback verification. Prepare is read-only. The [video runbook](video-playback.md) records offline validation, telemetry gaps and separate deployment/physical acceptance gates. No video feature is deployed or enabled by this implementation MR.
