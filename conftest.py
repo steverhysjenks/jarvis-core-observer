@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parent
 _temporary_storage = tempfile.TemporaryDirectory(prefix="jarvis-tests-")
 ISOLATION_ROOT = Path(_temporary_storage.name).resolve()
 SAFE_MODULES = {
+    "test_video.py",
     "test_mealie.py",
     "test_nutrition_summary.py",
     "test_nutrition.py",
@@ -25,6 +26,9 @@ SAFE_MODULES = {
 
 # Override inherited live configuration BEFORE application imports/collection.
 os.environ.update({
+    "VIDEO_ENABLED": "false", "JELLYFIN_URL": "https://jellyfin.invalid",
+    "JELLYFIN_TOKEN": "isolated-test-placeholder", "JELLYFIN_USER_ID": "fixture-user",
+    "JELLYFIN_MOVIE_LIBRARY_ID": "fixture-library", "VIDEO_TV_SOURCE": "fixture-hdmi",
     "HA_URL": "http://ha.invalid", "HA_TOKEN": "isolated-test-placeholder",
     "MUSIC_ASSISTANT_URL": "http://music.invalid",
     "MUSIC_ASSISTANT_TOKEN": "isolated-test-placeholder",
