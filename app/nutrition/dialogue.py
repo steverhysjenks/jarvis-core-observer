@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from app.nutrition import service
 from app.voice.requests import NutritionSelection
+from app.video.intents import recognise as recognise_video
 
 NUMBERS = {'a': 1, 'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
            'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10, 'half': 0.5,
@@ -37,6 +38,10 @@ def load(context):
 
 def is_followup(request):
     """Claim only bounded replies in an explicit, unexpired nutrition session."""
+    # Explicit video ownership outranks only this generic food-name follow-up.
+    # Structured nutrition actions and the established dispatcher order are unchanged.
+    if recognise_video(request.text) is not None:
+        return False
     draft=load(service.context_key(request)) if request.conversation_id else None
     if not draft:
         return False

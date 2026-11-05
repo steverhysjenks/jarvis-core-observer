@@ -13,6 +13,7 @@ ISOLATION_ROOT = Path(_temporary_storage.name).resolve()
 SAFE_MODULES = {
     "test_video.py",
     "test_jellyfin.py", "test_video_playback.py",
+    "test_assist_video_contract.py",
     "test_mealie.py",
     "test_nutrition_summary.py",
     "test_nutrition.py",

@@ -12,7 +12,7 @@ class VideoIntent:
 
 
 # Recognition aliases only: never catalogue IDs or evidence of availability.
-BARE_MOVIES = {"forrest gump", "kpop demon hunters"}
+BARE_MOVIES = {"forrest gump", "kpop demon hunters", "shawshank redemption"}
 
 
 def recognise(text: str) -> VideoIntent | None:
@@ -28,9 +28,12 @@ def recognise(text: str) -> VideoIntent | None:
     operation = "play" if match[1] else "prepare"
     body = match[1] or match[2]
     suffix = match[3]
-    target = re.fullmatch(r"(.+?)\s+on\s+(?:the\s+)?(.+?)", body, re.I)
+    if re.match(r"(?:the\s+)?(?:song|track|album|artist|playlist|music)\b", body, re.I):
+        return None
+    # Only a terminal television destination is syntax; "on" inside a title is data.
+    target = re.fullmatch(r"(.+)\s+(on\s+(?:the\s+)?(?:(?:[\w-]+\s+){0,5})?(?:tv|television))", body, re.I)
     if target:
-        body, suffix = target[1], "on " + target[2]
+        body, suffix = target[1], target[2]
     explicit_movie = bool(re.match(r"(?:the\s+)?(?:movie|film)\s+", body, re.I))
     body = re.sub(r"^(?:the\s+)?(?:movie|film)\s+", "", body, flags=re.I)
     year_match = re.fullmatch(r"(.+?)\s+(?:\((\d{4})\)|(\d{4}))", body)

@@ -35,6 +35,15 @@ def room_for(intent, request):
     return "living room" if room in {"living room", "lounge"} else None
 
 
+def receipt(result, intent):
+    """A deduplicated operation is historical evidence, never a fresh state check."""
+    outcome = result.result["status"]
+    status = "uncertain" if outcome == "uncertain" else "already_processed"
+    return reply(status, "This request was already processed. Its recorded outcome was " + outcome.replace("_", " ") +
+                 ". No command was resent and playback was not checked again.", intent,
+                 receipt={"recorded_outcome": outcome, "fresh_verification": False})
+
+
 class VideoCapability:
     def __init__(self, catalogue=jellyfin_client, playback=None):
         self.catalogue = catalogue
@@ -65,7 +74,7 @@ class VideoCapability:
                     self.pending = {k: v for k, v in self.pending.items() if v[0] > now}
                     if key in self.requests:
                         _, original, result = self.requests[key]
-                        return result if original == signature else reply(
+                        return receipt(result, intent) if original == signature else reply(
                             "request_conflict", "That request ID was already used for a different request.", intent)
                     if len(self.requests) >= MAX_REQUESTS:
                         return reply("busy", "Video request capacity is full. No command was sent.", intent)
@@ -124,7 +133,8 @@ class VideoCapability:
             if request.conversation_id and request.origin:
                 self.pending[caller] = (time.monotonic() + CONFIRM_SECONDS, intent, movie,
                                         fingerprint(states), source)
-                speech = "The TV may be in use. Say confirm video takeover within 60 seconds to replace viewing."
+                speech = (f"The TV may be in use. Replace viewing with {movie.title} ({movie.year}) in the living room? "
+                          "Say confirm video takeover within 60 seconds.")
             else:
                 speech = "The TV may be in use. A stable conversation is required for explicit video takeover confirmation."
             return reply("confirmation_required", speech, intent)

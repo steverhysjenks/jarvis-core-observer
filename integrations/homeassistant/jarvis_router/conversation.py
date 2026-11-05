@@ -72,6 +72,10 @@ class JarvisRouterConversationEntity(ConversationEntity):
     ) -> ConversationResult:
         """Send request to Jarvis Router."""
 
+        # HA can create a chat session while the incoming conversation ID is None.
+        # Use that canonical ID for both the outbound request and every response.
+        conversation_id = chat_log.conversation_id
+
         device_id = getattr(user_input, "device_id", None)
         area_id = None
         area_name = None
@@ -106,7 +110,7 @@ class JarvisRouterConversationEntity(ConversationEntity):
                     "text": user_input.text,
                     "origin_area": area_name,
                     "origin_satellite": getattr(user_input, "satellite_id", None),
-                    "conversation_id": user_input.conversation_id,
+                    "conversation_id": conversation_id,
                     "user_context": getattr(user_input.context, "user_id", None),
                     "origin": "home_assistant",
                     "request_id": uuid.uuid4().hex,
@@ -144,7 +148,7 @@ class JarvisRouterConversationEntity(ConversationEntity):
             result.async_set_error(intent.IntentResponseErrorCode.FAILED_TO_HANDLE, speech)
 
             return conversation.ConversationResult(
-                conversation_id=user_input.conversation_id,
+                conversation_id=conversation_id,
                 response=result,
                 continue_conversation=False,
             )
@@ -176,7 +180,7 @@ class JarvisRouterConversationEntity(ConversationEntity):
                 result.response_type=intent.IntentResponseType.QUERY_ANSWER
 
         return conversation.ConversationResult(
-            conversation_id=user_input.conversation_id,
+            conversation_id=conversation_id,
             response=result,
             continue_conversation=data.get('continue_conversation') is True,
         )

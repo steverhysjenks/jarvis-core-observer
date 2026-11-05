@@ -140,7 +140,7 @@ async def test_ha_forwarding_boundary(status,expected_type,continuing):
                'intent':NS(IntentResponse=IntentResponse,IntentResponseType=NS(QUERY_ANSWER='query_answer'),IntentResponseErrorCode=NS(FAILED_TO_HANDLE='failed'))}
     exec(compile(ast.Module(body=[method],type_ignores=[]),str(source),'exec'),namespace)
     user=NS(text='How much protein have I consumed today?',device_id=None,conversation_id='ha-session',context=NS(user_id='owner'),agent_id='conversation.jarvis_router',language='en',satellite_id='office')
-    result=await namespace['_async_handle_message'](NS(hass=None,_url='http://router.invalid',_api_key='test-key'),user,NS(async_add_assistant_content_without_tools=lambda _:None))
+    result=await namespace['_async_handle_message'](NS(hass=None,_url='http://router.invalid',_api_key='test-key'),user,NS(conversation_id='ha-session',async_add_assistant_content_without_tools=lambda _:None))
     assert captured['conversation_id']=='ha-session' and captured['user_context']=='owner'
     assert captured['origin']=='home_assistant' and captured['request_id']
     assert result.response.speech=='Actual native answer'

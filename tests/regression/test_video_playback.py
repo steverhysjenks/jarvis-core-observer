@@ -1,5 +1,8 @@
 """All HA calls are mocks; global audit hooks additionally prohibit network/process I/O."""
 import asyncio
+from copy import deepcopy
+import json
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -11,6 +14,7 @@ from app.video import playback
 from app.voice.requests import VoiceRequest
 
 MOVIE = Movie("a" * 32, "Forrest Gump", 1994, "13")
+OBSERVED_HA = json.loads((Path(__file__).resolve().parents[1] / "fixtures/ha-infuse-20261101.json").read_text())
 
 
 def request(text="Play Forrest Gump on the living room TV", identity="initial", **kwargs):
@@ -23,20 +27,22 @@ def request(text="Play Forrest Gump on the living room TV", identity="initial", 
 @pytest.fixture
 def workflow(monkeypatch):
     monkeypatch.setenv("VIDEO_ENABLED", "true")
+    monkeypatch.setenv("VIDEO_TV_SOURCE", "HDMI 1")
     monkeypatch.setattr(playback, "POLL_SECONDS", 0)
-    state = {"launched": False, "position": 0, "apple_state": "idle", "source": "fixture-hdmi"}
+    state = {"launched": False, "post_launch_reads": 0, "apple_state": "idle", "source": "HDMI 1"}
     async def get_state(entity):
         assert entity in {playback.APPLE_TV, playback.SONY_TV}
         if entity == playback.SONY_TV:
-            return {"entity_id": entity, "state": "on", "attributes": {"source": state["source"]}}
-        attrs = {}
-        current = state["apple_state"]
+            value = deepcopy(OBSERVED_HA["sony"])
+            value["attributes"]["source"] = state["source"]
+            return value
+        value = deepcopy(OBSERVED_HA["idle"])
+        value["state"] = state["apple_state"]
         if state["launched"]:
-            current = "playing"
-            state["position"] += 1
-            attrs = {"app_name": "Infuse", "media_content_id": "infuse://movie/13?play",
-                     "media_position": state["position"]}
-        return {"entity_id": entity, "state": current, "attributes": attrs}
+            state["post_launch_reads"] += 1
+            if state["post_launch_reads"] > 1:
+                value = deepcopy(OBSERVED_HA["playing"])
+        return value
     async def call(domain, service, data):
         assert (domain, service) == ("media_player", "play_media")
         assert data == {"entity_id": playback.APPLE_TV, "media_content_type": "url",
@@ -62,15 +68,15 @@ async def test_prepare_is_read_only_and_separate(workflow):
 
 
 @pytest.mark.asyncio
-async def test_occupied_requires_explicit_confirmation_and_actual_verification(workflow):
+async def test_occupied_confirmation_launches_but_real_ha_evidence_stays_uncertain(workflow):
     cap, client, catalogue, _ = workflow
     first = await cap.handle(request())
     assert first.result["status"] == "confirmation_required" and not first.handled
     client.call_service.assert_not_awaited()
     result = await cap.handle(request("Confirm video takeover", "confirm"))
-    assert result.handled and result.result["status"] == "playing"
+    assert not result.handled and result.result["status"] == "uncertain"
     assert client.call_service.await_count == 1
-    assert not cap.uncertain
+    assert cap.uncertain
 
 
 @pytest.mark.asyncio
@@ -79,7 +85,8 @@ async def test_duplicate_confirmation_concurrently_sends_exactly_one_command(wor
     await cap.handle(request())
     confirm = request("Confirm video takeover", "confirm")
     a, b = await asyncio.gather(cap.handle(confirm), cap.handle(confirm))
-    assert a.result["status"] == b.result["status"] == "playing"
+    assert a.result["status"] == b.result["status"] == "uncertain"
+    assert b.result["receipt"] == {"recorded_outcome": "uncertain", "fresh_verification": False}
     assert client.call_service.await_count == 1
 
 
@@ -233,25 +240,46 @@ async def test_caller_cancellation_keeps_uncertain_receipt_and_no_orphan(workflo
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("changes", [
-    {"media_content_id": "infuse://movie/999?play"}, {"app_name": "Other app"},
-    {"media_position": 0}, {"media_position": float("nan")}, {"media_content_id": None},
-])
-async def test_never_reports_playing_without_identity_and_progress(changes, workflow):
-    cap, client, _, _ = workflow
+async def test_realistic_idle_then_playing_without_identity_or_progress_never_verifies(workflow):
+    cap, client, _, state = workflow
     await cap.handle(request())
-    original = client.get_state.side_effect
-    async def changed(entity):
-        state = await original(entity)
-        if entity == playback.APPLE_TV:
-            state["attributes"].update(changes)
-        return state
-    client.get_state.side_effect = changed
-    # Changes also alter the confirmation snapshot: first re-establish its evidence.
-    await cap.handle(request(identity="new-view"))
     result = await cap.handle(request("Confirm video takeover", "confirm"))
     assert result.result["status"] == "uncertain" and not result.handled
     assert client.call_service.await_count == 1
+    assert state["post_launch_reads"] == playback.VERIFY_ATTEMPTS
+    assert "media_content_id" not in OBSERVED_HA["playing"]["attributes"]
+    assert OBSERVED_HA["playing"]["attributes"]["media_position"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["playing", "prepared", "confirmation_required", "uncertain"])
+async def test_cached_receipt_is_never_fresh_state_evidence(outcome, workflow):
+    from app.capabilities.video import reply
+    from app.video.intents import recognise
+    import time
+    cap, client, catalogue, _ = workflow
+    original = request()
+    # Synthetic historical operation result, not manufactured HA telemetry.
+    historical = reply(outcome, "Historical result only", recognise(original.text))
+    cap.requests[(context(original), original.request_id)] = time.monotonic() + 300, (original.text, original.area), historical
+    result = await cap.handle(original)
+    assert result.result["receipt"] == {"recorded_outcome": outcome, "fresh_verification": False}
+    assert result.result["status"] == ("uncertain" if outcome == "uncertain" else "already_processed")
+    assert not result.handled and not result.metadata["continue_conversation"]
+    assert "playback was not checked again" in result.metadata["speech"]
+    client.get_state.assert_not_awaited()
+    client.call_service.assert_not_awaited()
+    catalogue.lookup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_restart_discards_pending_confirmation_and_does_not_replay(workflow):
+    cap, client, catalogue, _ = workflow
+    await cap.handle(request())
+    restarted = VideoCapability(catalogue, playback.VideoPlayback(client))
+    result = await restarted.handle(request("Confirm video takeover", "confirm"))
+    assert result.result["status"] == "confirmation_expired"
+    client.call_service.assert_not_awaited()
 
 
 @pytest.mark.parametrize("identifier", [None, 13, "0", "-1", "1?play&url=bad", "https://bad.invalid"])

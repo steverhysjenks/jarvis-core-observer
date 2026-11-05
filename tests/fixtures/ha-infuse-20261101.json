@@ -1,0 +1,23 @@
+{
+  "provenance": "User-reported physical playback confirmation on 1 November 2026. Minimal observed HA fields, not an authoritative identity/progress feed. No TMDB content ID or advancing position was observed.",
+  "idle": {
+    "entity_id": "media_player.living_room_3",
+    "state": "idle",
+    "attributes": {}
+  },
+  "playing": {
+    "entity_id": "media_player.living_room_3",
+    "state": "playing",
+    "attributes": {
+      "app_name": "Infuse",
+      "media_title": "Forrest Gump",
+      "media_duration": 8525,
+      "media_position": 0
+    }
+  },
+  "sony": {
+    "entity_id": "media_player.sony_kdl_55w905a",
+    "state": "on",
+    "attributes": {"source": "HDMI 1"}
+  }
+}
