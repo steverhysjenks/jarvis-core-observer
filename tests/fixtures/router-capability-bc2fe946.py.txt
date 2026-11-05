@@ -1,0 +1,94 @@
+# Test-only snapshot of the accepted Router response contract.
+# Source: homelab/jarvis-router jarvis-router-api at bc2fe946f2da0d52839e158b3d9fa4636bf50f25.
+# Only these pure definitions are executed by the offline contract test.
+import re
+
+class CoreProtocolError(Exception):
+    """Core did not provide an unambiguous capability envelope."""
+
+def label(value):
+    return isinstance(value, str) and re.fullmatch(r"[a-zA-Z0-9_.:-]{1,80}", value) is not None
+
+def capability_response(value, request):
+    """None is permission for semantic routing; all claimed results are terminal.
+
+    Current Core omits claimed from JSON. Its dispatcher only serializes claimed
+    results, so a named domain is the compatibility ownership signal.
+    """
+    if not isinstance(value, dict) or type(value.get("handled")) is not bool:
+        raise CoreProtocolError()
+    handled = value["handled"]
+    domain = value.get("domain")
+    if "claimed" in value and type(value["claimed"]) is not bool:
+        raise CoreProtocolError()
+    claimed = value.get("claimed", domain is not None)
+    if not claimed:
+        if (handled or "domain" not in value or domain is not None
+                or value.get("path") != "semantic"
+                or any(k in value for k in ("speech", "operation_status", "result"))
+                or value.get("continue_conversation", False) is not False):
+            raise CoreProtocolError()
+        return None
+    if not label(domain):
+        raise CoreProtocolError()
+    if "path" in value and not label(value["path"]):
+        raise CoreProtocolError()
+    if "continue_conversation" in value and type(value["continue_conversation"]) is not bool:
+        raise CoreProtocolError()
+    if "operation_status" in value and not label(value["operation_status"]):
+        raise CoreProtocolError()
+    calls = value.get("mcp_calls")
+    if calls is not None and (type(calls) is not int or calls < 0):
+        raise CoreProtocolError()
+    speech = value.get("speech")
+    if "speech" in value and (not isinstance(speech, str) or not speech.strip()):
+        raise CoreProtocolError()
+
+    # Preserve nutrition's existing status/continuation validation, including
+    # write-reconciliation instructions, without using it to decide ownership.
+    if domain == "nutrition":
+        status = value.get("operation_status")
+        if not speech or status not in {
+            "read", "completed", "already_completed", "clarification_required",
+            "confirmation_required", "cancelled", "unavailable", "reconciliation_required",
+        }:
+            status = "invalid_response"
+            speech = "I could not verify the nutrition response. Please check SparkyFitness before retrying a write."
+        return {"speech": speech, "operation_status": status,
+                "conversation_id": request.get("conversation_id"), "request_id": request.get("request_id"),
+                "domain": domain, "mcp_calls": calls,
+                "continue_conversation": status in ("clarification_required", "confirmation_required")}
+
+    # Old music/replay results lack speech. These renderers never dispatch work.
+    # A top-level speech contract, when provided, always takes precedence.
+    if speech is None and domain == "music":
+        result = value.get("result") or {}
+        if not isinstance(result, dict):
+            raise CoreProtocolError()
+        name, target = result.get("name"), result.get("target_name")
+        if any(x is not None and (not isinstance(x, str) or not x.strip()) for x in (name, target)):
+            raise CoreProtocolError()
+        if not handled:
+            speech = "I understood that as a music request, but I can't perform that music request yet."
+        elif name and target:
+            speech = f"Playing {name} in {target}."
+        elif name:
+            speech = f"Playing {name}."
+        else:
+            speech = "Done."
+        return {"speech": speech}
+    if speech is None and domain == "replay":
+        result = value.get("result")
+        if not isinstance(result, dict) or result.get("replayed") is not handled:
+            raise CoreProtocolError()
+        # Core already delivered the announcement; never repeat its message.
+        return {"speech": "I repeated the last announcement." if handled else
+                "I can't repeat the last announcement right now.",
+                "domain": domain, "operation_status": "completed" if handled else "unavailable",
+                "continue_conversation": False}
+    if speech is None:
+        raise CoreProtocolError()
+    return {"speech": speech, "domain": domain, "handled": handled,
+            "claimed": True, "operation_status": value.get("operation_status", "completed" if handled else "not_handled"),
+            "conversation_id": request.get("conversation_id"), "request_id": request.get("request_id"),
+            "continue_conversation": value.get("continue_conversation", False)}

@@ -132,7 +132,7 @@ async def test_dispatch_preserves_other_routes(monkeypatch, upstream):
     from app.capabilities.models import CapabilityResult
     from app.voice.orchestrator import handle_voice_request
     assert dispatcher.CAPABILITIES == (dispatcher.replay_capability, dispatcher.nutrition_capability,
-                                       mealie_capability, dispatcher.music_capability)
+                                       mealie_capability, dispatcher.video_capability, dispatcher.music_capability)
     empty = CapabilityResult(False, False, None, "not_claimed")
     async def replay(request):
         return CapabilityResult(True, True, "replay", "fixture") if request.text == "Repeat that" else empty

@@ -11,3 +11,4 @@ These ADRs capture the decisions that shaped Jarvis Core rather than only the fi
 | 005 | Preserve UNKNOWN and fail closed where feasibility depends on it |
 | 006 | Use semantic occurrence identity for proactive lifecycle |
 | 011 | Reuse HA for deterministic read-only Mealie recipe lookup |
+| 012 | Bounded video identity through Jellyfin and playback through HA (proposed, offline only) |
