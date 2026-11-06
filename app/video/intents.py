@@ -15,6 +15,9 @@ class VideoIntent:
 
 def recognise(text: str) -> VideoIntent | None:
     text = re.sub(r"^(?:ask jarvis to\s+|jarvis[, :]\s*)", "", text.strip(), flags=re.I)
+    # Strip only a leading polite play request. Title data and ownership rules
+    # below are unchanged; unknown bare names do not become film requests.
+    text = re.sub(r"^(?:can|could)\s+you\s+(?=play\s)", "", text, flags=re.I)
     text = text.rstrip(".!?").strip()
     if text.lower() == "confirm video takeover":
         return VideoIntent("confirm")

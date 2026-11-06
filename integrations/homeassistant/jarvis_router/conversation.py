@@ -10,6 +10,7 @@ from homeassistant.components.conversation import (
     AssistantContent,
     ChatLog,
     ConversationEntity,
+    ConversationEntityFeature,
     ConversationInput,
     ConversationResult,
 )
@@ -50,6 +51,7 @@ class JarvisRouterConversationEntity(ConversationEntity):
     _attr_name = "Jarvis Router"
     _attr_unique_id = "jarvis_router_conversation"
     _attr_has_entity_name = True
+    _attr_supported_features = ConversationEntityFeature.CONTROL
 
     def __init__(
         self,
@@ -75,6 +77,28 @@ class JarvisRouterConversationEntity(ConversationEntity):
         # HA can create a chat session while the incoming conversation ID is None.
         # Use that canonical ID for both the outbound request and every response.
         conversation_id = chat_log.conversation_id
+
+        # CONTROL keeps native media search out of Assist's local-first pass,
+        # but HA also excludes HassGetState. Delegate only that read-only intent;
+        # never send media search back to the default agent.
+        native_response = await conversation.async_handle_intents(
+            self.hass,
+            user_input,
+            chat_log,
+            intent_filter=lambda result: result.intent.name != intent.INTENT_GET_STATE,
+        )
+        if native_response is not None:
+            chat_log.async_add_assistant_content_without_tools(
+                AssistantContent(
+                    agent_id=conversation.HOME_ASSISTANT_AGENT,
+                    content=native_response.speech.get("plain", {}).get("speech", ""),
+                )
+            )
+            return conversation.ConversationResult(
+                conversation_id=conversation_id,
+                response=native_response,
+                continue_conversation=False,
+            )
 
         device_id = getattr(user_input, "device_id", None)
         area_id = None

@@ -148,3 +148,21 @@ async def test_authenticated_request_envelope_and_no_lifespan(monkeypatch):
     assert not get_observer_status()["running"]
     service.assert_not_awaited()
     lookup.assert_not_awaited()
+
+
+@pytest.mark.parametrize("text,title,year,room", [
+    ("Can you play Barbie on the TV?", "Barbie", None, "living room"),
+    ("Could you play Moana?", "Moana", None, None),
+    ("Could you play Top Gun: Maverick (2022) on the living room TV?", "Top Gun: Maverick", 2022, "living room"),
+    ("Can you play the film The Girl on the Train?", "The Girl on the Train", None, None),
+])
+def test_bounded_polite_prefix_preserves_title_and_destination(text,title,year,room):
+    intent=recognise(text)
+    assert (intent.title,intent.year,intent.room)==(title,year,room)
+
+
+@pytest.mark.parametrize("text", ["Play Moa", "Could you play Moa?", "Can you play Stereophonics?",
+    "Could you play the song Moana?", "Can you play the album Moana 2?",
+    "Can you tell me about Moana?", "I wonder if you could play Moana"])
+def test_polite_prefix_does_not_broaden_film_ownership(text):
+    assert recognise(text) is None

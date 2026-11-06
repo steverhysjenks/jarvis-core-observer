@@ -34,7 +34,7 @@ def router_contract():
     return namespace["capability_response"]
 
 
-def agent_method(session):
+def agent_method(session, native_handler=None, origin_area=None):
     # Same isolated HA interface technique as existing nutrition forwarding tests.
     # Execute the committed integration method, not a duplicate implementation.
     source = ROOT / "integrations/homeassistant/jarvis_router/conversation.py"
@@ -49,10 +49,12 @@ def agent_method(session):
         def async_set_error(self, code, value):
             self.response_type, self.speech = "error", value
     namespace = {"ConversationInput": object, "ChatLog": object, "ConversationResult": object,
-                 "dr": None, "ar": None, "_LOGGER": NS(debug=lambda *a: None), "uuid": uuid,
+                 "dr": NS(async_get=lambda _: NS(async_get=lambda _: NS(area_id="fixture-area"))),
+                 "ar": NS(async_get=lambda _: NS(async_get_area=lambda _: NS(name=origin_area))), "_LOGGER": NS(debug=lambda *a: None), "uuid": uuid,
                  "async_get_clientsession": lambda _: session, "aiohttp": NS(ClientTimeout=lambda **kw: kw),
-                 "AssistantContent": lambda **kw: kw, "conversation": NS(ConversationResult=lambda **kw: NS(**kw)),
-                 "intent": NS(IntentResponse=IntentResponse, IntentResponseType=NS(QUERY_ANSWER="query_answer"),
+                 "AssistantContent": lambda **kw: kw, "conversation": NS(ConversationResult=lambda **kw: NS(**kw), HOME_ASSISTANT_AGENT="home_assistant",
+                    async_handle_intents=native_handler or AsyncMock(return_value=None)),
+                 "intent": NS(INTENT_GET_STATE="HassGetState", IntentResponse=IntentResponse, IntentResponseType=NS(QUERY_ANSWER="query_answer"),
                               IntentResponseErrorCode=NS(FAILED_TO_HANDLE="failed"))}
     exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), namespace)
     return namespace["_async_handle_message"]
@@ -127,7 +129,7 @@ def chain(monkeypatch, tmp_path):
     agent = NS(hass=None, _url="http://router.invalid", _api_key="isolated-router-key")
     def user(text, incoming=None):
         return NS(text=text, device_id=None, conversation_id=incoming, context=NS(user_id="fixture-user"),
-                  agent_id="conversation.jarvis_router", language="en", satellite_id="fixture-satellite")
+                  agent_id="conversation.jarvis_router", language="en", satellite_id="fixture-satellite", extra_system_prompt=None)
     def chat(identity=CANONICAL_ID):
         return NS(conversation_id=identity, async_add_assistant_content_without_tools=lambda _: None)
     # A genuine isolated nutrition draft coexists with the video pending operation.
@@ -249,7 +251,7 @@ async def test_nutrition_read_keeps_its_existing_owned_contract(chain, monkeypat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("text,expected", [("Play Top Gun","not_found"),("Play Moana","ambiguous"),
+@pytest.mark.parametrize("text,expected", [("Could you play Moana?","ambiguous"),("Can you play Top Gun: Maverick (2022)?","confirmation_required"),("Play Top Gun","not_found"),("Play Moana","ambiguous"),
     ("Play Top Gun: Maverick","confirmation_required"),("Play Moana 2","confirmation_required")])
 async def test_observed_bare_catalogue_outcomes_remain_video_owned(text,expected,chain):
     from app.adapters.jellyfin import resolve
@@ -276,5 +278,145 @@ async def test_indexed_film_names_do_not_consume_explicit_or_unrelated_music(tex
     await c.method(c.agent,c.user(text),c.chat())
     music.assert_awaited_once()
     assert dialogue.load(c.nutrition_context)=={"query":""}
+    c.catalogue.lookup.assert_not_awaited()
+    c.ha.call_service.assert_not_awaited()
+
+
+def ha_ownership_stage(c, native_intent=None, *, features=None, native_error=False, origin_area=None):
+    """Execute pinned installed HA dispatch + actual agent/Router/Core.
+
+    Sentence recognition and native services are interface mocks, not a live HA
+    framework. Native media matching mirrors the retained TV-alias traces.
+    """
+    fixture = ROOT / "tests/fixtures/ha-local-first-2026.10.4.py.txt"
+    raw = fixture.read_bytes().replace(b"\r\n", b"\n")
+    assert hashlib.sha256(raw).hexdigest() == "764256e391ef0680ef18f24871d252a35c110ad2cd9affff8a84162ede4a43cb"
+    class RecognizeResult:
+        def __init__(self, name):
+            self.intent = NS(name=name)
+    response = NS(speech={"plain": {"speech": "Native answer"}},
+                  response_type="error" if native_error else "action_done", error_code="failed")
+    native = NS(async_recognize_intent=AsyncMock(return_value=RecognizeResult(native_intent) if native_intent else None),
+                _async_process_intent_result=AsyncMock(return_value=response))
+    conversation = NS(HOME_ASSISTANT_AGENT="home_assistant", ConversationEntityFeature=NS(CONTROL=1),
+                      ConversationResult=lambda **kw: NS(**kw), AssistantContent=lambda **kw: kw,
+                      async_handle_sentence_triggers=AsyncMock(return_value=None))
+    namespace = {"Callable": object, "RecognizeResult": RecognizeResult, "ConversationInput": object,
+                 "ChatLog": object, "conversation": conversation,
+                 "media_player": NS(INTENT_MEDIA_SEARCH_AND_PLAY="HassMediaSearchAndPlay"),
+                 "EntityStateAttribute": NS(SUPPORTED_FEATURES="supported_features"),
+                 "intent": NS(INTENT_GET_STATE="HassGetState", IntentResponse=object,
+                              IntentResponseType=NS(ERROR="error"),
+                              IntentResponseErrorCode=NS(FAILED_TO_HANDLE="failed", UNKNOWN="unknown"))}
+    # Avoid evaluating HA type annotations without importing the HA framework.
+    exec(compile("from __future__ import annotations\n" + raw.decode(), str(fixture), "exec"), namespace)
+    async def handle(hass, user, chat, *, intent_filter=None):
+        return await namespace["async_handle_intents"](native, user, chat, intent_filter=intent_filter)
+    conversation.async_handle_intents = handle
+    method = agent_method(c.transport, handle, origin_area)
+    async def converse(**kwargs):
+        return await method(c.agent, user, chat)
+    conversation.async_converse = converse
+    tree = ast.parse((ROOT / "integrations/homeassistant/jarvis_router/conversation.py").read_text())
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    assignment = next(n for n in cls.body if isinstance(n, ast.Assign)
+                      and any(isinstance(t, ast.Name) and t.id == "_attr_supported_features" for t in n.targets))
+    advertised = eval(compile(ast.Expression(assignment.value), "agent features", "eval"),
+                      {"ConversationEntityFeature": conversation.ConversationEntityFeature})
+    assert advertised == 1
+    host = NS(hass=NS(states=NS(get=lambda _: NS(attributes={"supported_features": advertised if features is None else features}))),
+              pipeline=NS(prefer_local_intents=True, conversation_language="en"))
+    runner = NS(intent_agent=NS(id="conversation.jarvis_router"), host=host, _intent_agent_only=False)
+    user, chat = None, None
+    async def run(text):
+        nonlocal user, chat
+        user, chat = c.user(text), c.chat()
+        if origin_area:
+            user.device_id = "fixture-device"
+        return await namespace["run_intent_stage"](runner, user, chat, NS(conversation_id=CANONICAL_ID))
+    return NS(run=run, native=native, response=response)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text,native_intent", [
+    ("Play Top Gun Maverick on the TV", "HassMediaSearchAndPlay"),
+    ("Can you play Barbie on the TV?", "HassMediaSearchAndPlay"),
+    ("Could you play Moana?", None), ("Play Moana", None),
+    ("Could you play Top Gun: Maverick (2022) on the TV?", "HassMediaSearchAndPlay"),
+])
+async def test_assist_media_interception_is_excluded_through_disabled_core(text, native_intent, chain, monkeypatch):
+    c = chain
+    monkeypatch.setenv("VIDEO_ENABLED", "false")
+    stage = ha_ownership_stage(c, native_intent)
+    result, local = await stage.run(text)
+    assert not local and result.conversation_id == CANONICAL_ID
+    assert c.transport.requests[0]["text"] == text
+    assert c.transport.responses[-1]["domain"] == "video"
+    assert c.transport.responses[-1]["operation_status"] == "disabled"
+    assert not c.transport.semantic
+    stage.native._async_process_intent_result.assert_not_awaited()
+    c.catalogue.lookup.assert_not_awaited()
+    c.ha.get_state.assert_not_awaited()
+    c.ha.call_service.assert_not_awaited()
+    c.forbidden.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pinned_assist_reproduces_pre_control_interception(chain):
+    c = chain
+    stage = ha_ownership_stage(c, "HassMediaSearchAndPlay", features=0, native_error=True)
+    result, local = await stage.run("Can you play Barbie on the TV?")
+    assert local and result.response is stage.response and result.response.error_code == "failed"
+    stage.native._async_process_intent_result.assert_awaited_once()
+    assert not c.transport.requests
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text,name", [
+    ("Turn on the office light", "HassTurnOn"),
+    ("Pause the office speaker", "HassMediaPause"),
+    ("Set the office speaker volume to 20 percent", "HassSetVolume"),
+    ("Is the office light on?", "HassGetState"),
+])
+async def test_control_preserves_native_controls_and_state_queries(text, name, chain):
+    c = chain
+    stage = ha_ownership_stage(c, name)
+    result, local = await stage.run(text)
+    assert local is (name != "HassGetState")
+    assert result.response is stage.response and result.conversation_id == CANONICAL_ID
+    stage.native._async_process_intent_result.assert_awaited_once()
+    assert not c.transport.requests
+    c.catalogue.lookup.assert_not_awaited()
+    c.ha.call_service.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_native_get_state_failure_is_not_retried_through_router(chain):
+    c = chain
+    stage = ha_ownership_stage(c, "HassGetState", native_error=True)
+    result, local = await stage.run("Is the office light on?")
+    assert not local and result.response.response_type == "error"
+    assert not c.transport.requests
+    stage.native._async_process_intent_result.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text,query", [("Play Moa", "Moa"), ("play Stereophonics", "Stereophonics"),
+                                       ("Play the song Moana on the office speaker", "Moana")])
+async def test_assist_music_keeps_origin_area_and_music_assistant_path(text, query, chain, monkeypatch):
+    from app.capabilities import music
+    c = chain
+    classifier = AsyncMock(return_value=NS(retrieval_type="explicit", query=query, intent="play"))
+    play = AsyncMock(return_value={"handled": True, "name": query, "target_entity_id": "media_player.office"})
+    monkeypatch.setattr(music, "classify_music_request", classifier)
+    monkeypatch.setattr(music, "play_explicit", play)
+    monkeypatch.setattr(dispatcher.music_capability, "handle", music.MusicCapability().handle)
+    stage = ha_ownership_stage(c, "HassMediaSearchAndPlay", origin_area="Office")
+    result, local = await stage.run(text)
+    assert not local and result.conversation_id == CANONICAL_ID
+    classifier.assert_awaited_once_with(text)
+    play.assert_awaited_once_with(query, "office")
+    assert c.transport.requests[0]["origin_area"] == "Office" and not c.transport.semantic
+    stage.native._async_process_intent_result.assert_not_awaited()
     c.catalogue.lookup.assert_not_awaited()
     c.ha.call_service.assert_not_awaited()
