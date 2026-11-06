@@ -24,6 +24,10 @@ Report playing only after two HA samples show Infuse, the exact constructed TMDB
 
 ## Consequences and limits
 
+### 6 November 2026 bounded title-recognition amendment
+
+The owner authorised replacing fixed bare-film aliases with scoped catalogue-derived ownership. An explicitly refreshed root-owned title snapshot supplies exact title names and subtitle-colon roots, without media identities or credentials. A subtitle root recognises intent but never resolves an absent original to its sequel. Live exact title/year/TMDB lookup remains the identity authority. This supersedes only the original fixed-alias requirement. Existing dispatcher order, explicit music/typed nutrition precedence, disabled-mode no-network behaviour, takeover, deadlines and fail-closed verifier are retained. See the dated commissioning amendment in `docs/video-playback.md` for snapshot bounds, refresh and cold-start limitations. Valid punctuation is permitted while URLs, paths, controls and compound commands remain rejected. No Infuse-version logic or telemetry fallback is introduced.
+
 `VIDEO_ENABLED=false` by default, checked at capability entry before any catalogue or HA access. No production configuration changes are part of this MR. Existing physical viewing is unaffected by this development session. All orchestration tests use mock HA clients under the repository's mandatory network/process audit hook. Linux Python 3.13 CI is authoritative; Windows async event loops require sockets prohibited by that hook.
 
 The in-memory lock, confirmation and duplicate receipts assume the existing single application worker. They are not durable across restart and cannot coordinate multiple workers or external HA users. The uncertainty latch has no automatic reset or expiry; a later operator reconciliation is needed. Restarting must never be used as an automatic retry/reset. Same request IDs are deduplicated only within the receipt window; no exactly-once claim spans a restart. A physical user can act between the last sample and command; this race is unavoidable with the existing HA API and remains an acceptance risk.

@@ -47,7 +47,8 @@ def is_followup(request):
         return False
     text=request.text.strip().lower().rstrip('.?!')
     text=re.sub(r'\b(choice|entry|variant) (one|two|three|four|five|six|seven|eight|nine|ten)\b',lambda m:f'{m[1]} {NUMBERS[m[2]]}',text)
-    if re.match(r'^(?:play|stop|pause|turn|switch|set|what|who|why|how|tell|can you|could you)\b',text):
+    command_text = re.sub(r'^(?:ask jarvis to\s+|jarvis[, :]\s*)', '', text)
+    if re.match(r'^(?:play|stop|pause|turn|switch|set|what|who|why|how|tell|can you|could you)\b',command_text):
         return False
     if not draft.get('query') and not draft.get('food_id') and not draft.get('entry_id'):
         return bool(re.fullmatch(r"[\w '\-]{2,120}",text))

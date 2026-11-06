@@ -23,14 +23,59 @@ def test_exact_identity_and_year():
     assert jellyfin.resolve(payload(ITEM), "Dun")[0] == "not_found"
 
 
+@pytest.mark.parametrize("title,year,expected,tmdb", [
+    ("Top Gun",1986,"not_found",None), ("Top Gun",None,"not_found",None),
+    ("Top Gun: Maverick",2022,"resolved","361743"),
+    ("Moana",None,"ambiguous",None), ("Moana",2016,"resolved","277834"),
+    ("Moana",2026,"resolved","1108427"), ("Moana 2",2024,"resolved","1241982"),
+])
+def test_observed_catalogue_exactness_and_genuine_ambiguity(title, year, expected, tmdb):
+    import json
+    from pathlib import Path
+    evidence=json.loads((Path(__file__).resolve().parents[1]/"fixtures/jellyfin-movies-20261106.json").read_text())
+    # Observed identity metadata; the media-source field is an explicit offline stub.
+    items=[{"Id":m["item_id"],"Name":m["title"],"ProductionYear":m["year"],"Type":"Movie",
+            "ProviderIds":{"Tmdb":m["tmdb_id"]},"LocationType":"FileSystem","MediaSources":[{"Id":"synthetic-source"}]}
+           for m in evidence["movies"]]
+    status,movie,choices=jellyfin.resolve(payload(*items),title,year)
+    assert status==expected
+    assert (movie.tmdb_id if movie else None)==tmdb
+    if status=="ambiguous":assert {x["year"] for x in choices}=={2016,2026}
+
+
+@pytest.mark.asyncio
+async def test_title_index_export_is_scoped_complete_and_bounded(monkeypatch,transport):
+    monkeypatch.setattr(jellyfin.httpx,"AsyncClient",lambda **kw: ASYNC_CLIENT(transport=httpx.MockTransport(
+        lambda r:httpx.Response(200,json=payload(ITEM))),**kw))
+    value=await jellyfin.JellyfinClient().title_index()
+    assert value=={"schema":1,"user_id":"b"*32,"library_id":"c"*32,"titles":["Dune"]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("data", [{"Items":[],"TotalRecordCount":1}, {"Items":[],"TotalRecordCount":0},
+    {"Items":[ITEM],"TotalRecordCount":2}, {"Items":[ITEM],"TotalRecordCount":True},
+    {"Items":[{**ITEM,"Type":"Series"}],"TotalRecordCount":1}])
+async def test_partial_or_wrong_index_export_is_not_published(data,monkeypatch,transport):
+    monkeypatch.setattr(jellyfin.httpx,"AsyncClient",lambda **kw: ASYNC_CLIENT(transport=httpx.MockTransport(
+        lambda r:httpx.Response(200,json=data)),**kw))
+    with pytest.raises(jellyfin.CatalogueUnavailable):await jellyfin.JellyfinClient().title_index()
+
+
 def test_remakes_duplicates_and_truncation():
     old = {**ITEM, "ProductionYear": 1984, "ProviderIds": {"Tmdb": "841"}}
     assert jellyfin.resolve(payload(ITEM, old), "Dune")[0] == "ambiguous"
     assert jellyfin.resolve(payload(ITEM, old), "Dune", 1984)[1].tmdb_id == "841"
     assert jellyfin.resolve(payload(ITEM, ITEM), "Dune", 2021)[0] == "ambiguous"
-    assert jellyfin.resolve({**payload(ITEM), "TotalRecordCount": 2}, "Dune")[0] == "ambiguous"
-    assert jellyfin.resolve(payload(*([ITEM] * jellyfin.LIMIT)), "Dune")[0] == "ambiguous"
+    with pytest.raises(jellyfin.CatalogueUnavailable):
+        jellyfin.resolve({**payload(ITEM), "TotalRecordCount": 2}, "Dune")
+    with pytest.raises(jellyfin.CatalogueUnavailable):
+        jellyfin.resolve(payload(*([ITEM] * jellyfin.LIMIT)), "Dune")
     assert jellyfin.resolve(payload(), "Missing")[0] == "not_found"
+
+
+def test_incomplete_duplicate_is_unavailable_not_genuine_ambiguity():
+    with pytest.raises(jellyfin.CatalogueUnavailable):
+        jellyfin.resolve(payload(ITEM,{**ITEM,"ProviderIds":{}}),"Dune")
 
 
 @pytest.mark.parametrize("changes", [

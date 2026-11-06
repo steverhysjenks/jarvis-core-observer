@@ -1,6 +1,8 @@
-"""Deterministic movie grammar. Bare play stays with music unless allowlisted."""
+"""Deterministic movie grammar with scoped catalogue-derived bare-title ownership."""
 from dataclasses import dataclass
 import re
+from app.adapters.jellyfin import normalise
+from app.video.title_index import catalogue_titles
 
 
 @dataclass(frozen=True)
@@ -11,10 +13,6 @@ class VideoIntent:
     room: str | None = None
 
 
-# Recognition aliases only: never catalogue IDs or evidence of availability.
-BARE_MOVIES = {"forrest gump", "kpop demon hunters", "shawshank redemption"}
-
-
 def recognise(text: str) -> VideoIntent | None:
     text = re.sub(r"^(?:ask jarvis to\s+|jarvis[, :]\s*)", "", text.strip(), flags=re.I)
     text = text.rstrip(".!?").strip()
@@ -22,7 +20,7 @@ def recognise(text: str) -> VideoIntent | None:
         return VideoIntent("confirm")
     if text.lower() == "cancel video takeover":
         return VideoIntent("cancel")
-    match = re.fullmatch(r"(?:play\s+(.+)|get\s+(.+?)\s+ready(?:\s+(.+))?)", text, re.I)
+    match = re.fullmatch(r"(?:play\s+(.+)|get\s+(.+?)\s+ready(?:\s+(.+))?)", text, re.I | re.S)
     if not match:
         return None
     operation = "play" if match[1] else "prepare"
@@ -31,7 +29,7 @@ def recognise(text: str) -> VideoIntent | None:
     if re.match(r"(?:the\s+)?(?:song|track|album|artist|playlist|music)\b", body, re.I):
         return None
     # Only a terminal television destination is syntax; "on" inside a title is data.
-    target = re.fullmatch(r"(.+)\s+(on\s+(?:the\s+)?(?:(?:[\w-]+\s+){0,5})?(?:tv|television))", body, re.I)
+    target = re.fullmatch(r"(.+)\s+(on\s+(?:the\s+)?(?:(?:[\w-]+\s+){0,5})?(?:tv|television))", body, re.I | re.S)
     if target:
         body, suffix = target[1], target[2]
     explicit_movie = bool(re.match(r"(?:the\s+)?(?:movie|film)\s+", body, re.I))
@@ -41,10 +39,10 @@ def recognise(text: str) -> VideoIntent | None:
     title = year_match[1].strip() if year_match else body.strip()
     if suffix and not re.search(r"\b(?:tv|television)\b", suffix, re.I) and not explicit_movie:
         return None
-    if not (suffix or explicit_movie or title.casefold() in BARE_MOVIES):
+    if not (suffix or explicit_movie or normalise(title) in catalogue_titles()):
         return None
     # Claim explicit malformed video requests so they cannot become device inference.
-    if (not title or len(title) > 180 or re.search(r"[;\r\n.!?/:\\]|\b(?:and then|then|and play|and turn)\b", title, re.I)
+    if (not title or len(title) > 180 or re.search(r"[;\x00-\x1f/\\]|\b(?:https?|file|infuse|data|javascript):|www\.|\b(?:and then|then|and play|and turn)\b", title, re.I)
             or (year is not None and not 1888 <= year <= 2100)):
         return VideoIntent("invalid")
     room = None
