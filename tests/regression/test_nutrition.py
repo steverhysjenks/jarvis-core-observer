@@ -1,3 +1,4 @@
+from unittest.mock import AsyncMock
 """Reviewed offline nutrition boundaries; no network or production data."""
 from datetime import datetime
 from uuid import UUID

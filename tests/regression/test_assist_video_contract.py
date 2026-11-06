@@ -129,7 +129,7 @@ def chain(monkeypatch, tmp_path):
     agent = NS(hass=None, _url="http://router.invalid", _api_key="isolated-router-key")
     def user(text, incoming=None):
         return NS(text=text, device_id=None, conversation_id=incoming, context=NS(user_id="fixture-user"),
-                  agent_id="conversation.jarvis_router", language="en", satellite_id="fixture-satellite")
+                  agent_id="conversation.jarvis_router", language="en", satellite_id="fixture-satellite", extra_system_prompt=None)
     def chat(identity=CANONICAL_ID):
         return NS(conversation_id=identity, async_add_assistant_content_without_tools=lambda _: None)
     # A genuine isolated nutrition draft coexists with the video pending operation.
