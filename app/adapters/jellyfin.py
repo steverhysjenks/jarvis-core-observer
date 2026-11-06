@@ -3,7 +3,8 @@ from dataclasses import asdict, dataclass
 import json
 import os
 import re
-from urllib.parse import urlsplit
+from pathlib import Path
+from urllib.parse import quote, urlsplit
 from uuid import UUID
 
 import httpx
@@ -71,7 +72,12 @@ def resolve(payload, title, year=None):
 class JellyfinClient:
     async def lookup(self, title, year=None):
         base = os.environ.get("JELLYFIN_URL", "").rstrip("/")
-        token = os.environ.get("JELLYFIN_TOKEN", "")
+        token_file = os.environ.get("JELLYFIN_TOKEN_FILE", "")
+        try:
+            token = (Path(token_file).read_text(encoding="utf-8").strip() if token_file
+                     else os.environ.get("JELLYFIN_TOKEN", ""))
+        except (OSError, UnicodeError, ValueError):
+            raise CatalogueUnavailable() from None
         user = os.environ.get("JELLYFIN_USER_ID", "")
         library = os.environ.get("JELLYFIN_MOVIE_LIBRARY_ID", "")
         try:
@@ -95,7 +101,7 @@ class JellyfinClient:
         try:
             async with httpx.AsyncClient(timeout=4, trust_env=False, follow_redirects=False) as client:
                 async with client.stream("GET", base + "/Items", params=params,
-                                         headers={"X-Emby-Token": token}) as response:
+                                         headers={"Authorization": 'MediaBrowser Token="' + quote(token, safe="") + '"'}) as response:
                     response.raise_for_status()
                     body = bytearray()
                     async for chunk in response.aiter_bytes(chunk_size=8192):

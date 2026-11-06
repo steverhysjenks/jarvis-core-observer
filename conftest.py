@@ -29,7 +29,7 @@ SAFE_MODULES = {
 # Override inherited live configuration BEFORE application imports/collection.
 os.environ.update({
     "VIDEO_ENABLED": "false", "JELLYFIN_URL": "https://jellyfin.invalid",
-    "JELLYFIN_TOKEN": "isolated-test-placeholder", "JELLYFIN_USER_ID": "fixture-user",
+    "JELLYFIN_TOKEN": "isolated-test-placeholder", "JELLYFIN_TOKEN_FILE": "", "JELLYFIN_USER_ID": "fixture-user",
     "JELLYFIN_MOVIE_LIBRARY_ID": "fixture-library", "VIDEO_TV_SOURCE": "fixture-hdmi",
     "HA_URL": "http://ha.invalid", "HA_TOKEN": "isolated-test-placeholder",
     "MUSIC_ASSISTANT_URL": "http://music.invalid",
