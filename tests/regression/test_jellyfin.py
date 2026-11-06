@@ -73,13 +73,44 @@ async def test_authenticated_bounded_movie_library_get(transport):
     assert result[0] == "resolved"
     request, = transport
     assert request.method == "GET" and request.url.path == "/Items"
-    assert request.headers["X-Emby-Token"] == "isolated-test-placeholder"
+    assert request.headers["Authorization"] == 'MediaBrowser Token="isolated-test-placeholder"'
+    assert "X-Emby-Token" not in request.headers
     assert "token" not in str(request.url).lower()
     assert request.url.params["ParentId"] == "c" * 32
     assert request.url.params["UserId"] == "b" * 32
     assert request.url.params["IncludeItemTypes"] == "Movie"
     assert request.url.params["Limit"] == str(jellyfin.LIMIT)
     assert request.url.params["Years"] == "2021"
+
+
+@pytest.mark.asyncio
+async def test_file_credential_precedes_environment_and_is_encoded(transport, monkeypatch):
+    monkeypatch.setenv("JELLYFIN_TOKEN_FILE", "/isolated-fixture/catalogue.token")
+    def read(path, **kwargs):
+        assert str(path).replace("\\", "/") == "/isolated-fixture/catalogue.token"
+        assert kwargs == {"encoding": "utf-8"}
+        return 'fixture"token\\value\n'
+    monkeypatch.setattr(jellyfin.Path, "read_text", read)
+    assert (await jellyfin.JellyfinClient().lookup("Dune"))[0] == "resolved"
+    assert transport[0].headers["Authorization"] == 'MediaBrowser Token="fixture%22token%5Cvalue"'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["missing", "unreadable", "encoding", "empty"])
+async def test_file_credential_failure_never_falls_back_or_sends(failure, transport, monkeypatch):
+    monkeypatch.setenv("JELLYFIN_TOKEN_FILE", "/isolated-fixture/catalogue.token")
+    def read(path, **kwargs):
+        if failure == "missing":
+            raise FileNotFoundError("private-credential-path")
+        if failure == "unreadable":
+            raise PermissionError("private-credential-path")
+        if failure == "encoding":
+            raise UnicodeError("private-credential-value")
+        return " \n"
+    monkeypatch.setattr(jellyfin.Path, "read_text", read)
+    with pytest.raises(jellyfin.CatalogueUnavailable) as exc:
+        await jellyfin.JellyfinClient().lookup("Dune")
+    assert not str(exc.value) and not transport
 
 
 @pytest.mark.asyncio
