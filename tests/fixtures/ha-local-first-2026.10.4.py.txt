@@ -1,0 +1,124 @@
+# Test-only excerpts of installed Home Assistant 2026.10.4 (Apache-2.0).
+# Read from HAOS VM 101, 6 November 2026; no HA runtime copied or imported.
+# Recognition/entities are mocked; these are the real filter/dispatch methods.
+# Source: homeassistant/components/assist_pipeline/default_pipeline.py:70-75,732-809
+# Source: homeassistant/components/conversation/default_agent.py:1616-1646
+def _async_local_fallback_intent_filter(result: RecognizeResult) -> bool:
+    """Filter out intents that are not local fallback."""
+    return result.intent.name in (
+        intent.INTENT_GET_STATE,
+        media_player.INTENT_MEDIA_SEARCH_AND_PLAY,
+    )
+
+async def async_handle_intents(
+    self,
+    user_input: ConversationInput,
+    chat_log: ChatLog,
+    *,
+    intent_filter: Callable[[RecognizeResult], bool] | None = None,
+) -> intent.IntentResponse | None:
+    """Try to match sentence against registered intents and return response.
+
+    Only performs strict matching with exposed entities and exact wording.
+    Returns None if no match or a matching error occurred.
+    """
+    result = await self.async_recognize_intent(user_input, strict_intents_only=True)
+    if not isinstance(result, RecognizeResult) or (
+        intent_filter is not None and intent_filter(result)
+    ):
+        # No error message on failed match
+        return None
+
+    response = await self._async_process_intent_result(result, user_input, chat_log)
+    if (
+        response.response_type is intent.IntentResponseType.ERROR
+        and response.error_code
+        not in (
+            intent.IntentResponseErrorCode.FAILED_TO_HANDLE,
+            intent.IntentResponseErrorCode.UNKNOWN,
+        )
+    ):
+        # We ignore no matching errors
+        return None
+    return response
+
+async def run_intent_stage(self, user_input, chat_log, session):
+    agent_id = self.intent_agent.id
+    processed_locally = agent_id == conversation.HOME_ASSISTANT_AGENT
+    all_targets_in_satellite_area = False
+    intent_response: intent.IntentResponse | None = None
+    if not processed_locally and not self._intent_agent_only:
+        # Sentence triggers override conversation agent
+        if (
+            trigger_response_text
+            := await conversation.async_handle_sentence_triggers(
+                self.host.hass, user_input, chat_log
+            )
+        ) is not None:
+            # Sentence trigger matched
+            agent_id = "sentence_trigger"
+            processed_locally = True
+            intent_response = intent.IntentResponse(
+                self.host.pipeline.conversation_language
+            )
+            intent_response.async_set_speech(trigger_response_text)
+
+        intent_filter: Callable[[RecognizeResult], bool] | None = None
+        # If the LLM has API access, we filter out some sentences that are
+        # interfering with LLM operation.
+        if (
+            intent_agent_state := self.host.hass.states.get(
+                self.intent_agent.id
+            )
+        ) and intent_agent_state.attributes.get(
+            EntityStateAttribute.SUPPORTED_FEATURES, 0
+        ) & conversation.ConversationEntityFeature.CONTROL:
+            intent_filter = _async_local_fallback_intent_filter
+
+        # Try local intents
+        if (
+            intent_response is None
+            and self.host.pipeline.prefer_local_intents
+            and (
+                intent_response := await conversation.async_handle_intents(
+                    self.host.hass,
+                    user_input,
+                    chat_log,
+                    intent_filter=intent_filter,
+                )
+            )
+        ):
+            # Local intent matched
+            agent_id = conversation.HOME_ASSISTANT_AGENT
+            processed_locally = True
+
+    # It was already handled, create response and add to chat history
+    if intent_response is not None:
+        speech: str = intent_response.speech.get("plain", {}).get(
+            "speech", ""
+        )
+        chat_log.async_add_assistant_content_without_tools(
+            conversation.AssistantContent(
+                agent_id=agent_id,
+                content=speech,
+            )
+        )
+        conversation_result = conversation.ConversationResult(
+            response=intent_response,
+            conversation_id=session.conversation_id,
+        )
+
+    else:
+        # Fall back to pipeline conversation agent
+        conversation_result = await conversation.async_converse(
+            hass=self.host.hass,
+            text=user_input.text,
+            conversation_id=user_input.conversation_id,
+            device_id=user_input.device_id,
+            satellite_id=user_input.satellite_id,
+            context=user_input.context,
+            language=user_input.language,
+            agent_id=user_input.agent_id,
+            extra_system_prompt=user_input.extra_system_prompt,
+        )
+    return conversation_result, processed_locally
