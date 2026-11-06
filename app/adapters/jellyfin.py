@@ -41,17 +41,19 @@ def resolve(payload, title, year=None):
             or payload.get("StartIndex", 0) != 0 or any(not isinstance(x, dict) for x in items)):
         raise CatalogueUnavailable()
     if count > len(items) or len(items) == LIMIT:
-        return "ambiguous", None, []
+        raise CatalogueUnavailable()
     matches = [x for x in items if x.get("Type") == "Movie"
                and isinstance(x.get("Name"), str) and normalise(x["Name"]) == normalise(title)
                and (year is None or x.get("ProductionYear") == year)]
     if not matches:
         return "not_found", None, []
-    choices = [{"title": x["Name"][:180], "year": x.get("ProductionYear") if type(x.get("ProductionYear")) is int else None}
-               for x in matches[:5]]
-    if len(matches) != 1:
-        return "ambiguous", None, choices
-    item = matches[0]
+    movies = [_validated_movie(item) for item in matches]
+    if len(movies) != 1:
+        return "ambiguous", None, [{"title": m.title, "year": m.year} for m in movies[:5]]
+    return "resolved", movies[0], []
+
+
+def _validated_movie(item):
     try:
         identity = UUID(item["Id"]).hex
         tmdb = item["ProviderIds"]["Tmdb"]
@@ -66,11 +68,11 @@ def resolve(payload, title, year=None):
             raise ValueError()
     except (KeyError, TypeError, ValueError, AttributeError):
         raise CatalogueUnavailable() from None
-    return "resolved", Movie(identity, item["Name"][:180], item["ProductionYear"], tmdb), []
+    return Movie(identity, item["Name"][:180], item["ProductionYear"], tmdb)
 
 
 class JellyfinClient:
-    async def lookup(self, title, year=None):
+    async def _items(self, options, max_bytes=MAX_BYTES):
         base = os.environ.get("JELLYFIN_URL", "").rstrip("/")
         token_file = os.environ.get("JELLYFIN_TOKEN_FILE", "")
         try:
@@ -92,12 +94,9 @@ class JellyfinClient:
             user, library = UUID(user).hex, UUID(library).hex
         except (ValueError, AttributeError):
             raise CatalogueUnavailable() from None
-        params = {"UserId": user, "ParentId": library, "Recursive": "true",
-                  "IncludeItemTypes": "Movie", "SearchTerm": title, "Limit": LIMIT,
-                  "StartIndex": 0, "Fields": "ProviderIds,MediaSources", "EnableImages": "false",
+        params = {**options, "UserId": user, "ParentId": library, "Recursive": "true",
+                  "IncludeItemTypes": "Movie", "StartIndex": 0, "EnableImages": "false",
                   "EnableUserData": "false", "EnableTotalRecordCount": "true"}
-        if year is not None:
-            params["Years"] = str(year)
         try:
             async with httpx.AsyncClient(timeout=4, trust_env=False, follow_redirects=False) as client:
                 async with client.stream("GET", base + "/Items", params=params,
@@ -106,10 +105,33 @@ class JellyfinClient:
                     body = bytearray()
                     async for chunk in response.aiter_bytes(chunk_size=8192):
                         body.extend(chunk)
-                        if len(body) > MAX_BYTES:
+                        if len(body) > max_bytes:
                             raise CatalogueUnavailable()
-            return resolve(json.loads(body), title, year)
+            return json.loads(body), {"user_id": user, "library_id": library}
         except (httpx.HTTPError, ValueError, TypeError):
+            raise CatalogueUnavailable() from None
+
+    async def lookup(self, title, year=None):
+        options = {"SearchTerm": title, "Limit": LIMIT, "Fields": "ProviderIds,MediaSources"}
+        if year is not None:
+            options["Years"] = str(year)
+        payload, _ = await self._items(options)
+        return resolve(payload, title, year)
+
+    async def title_index(self):
+        """Explicit operator refresh: one bounded complete title listing, no pagination."""
+        from app.video.title_index import MAX_TITLES, validate_index
+        payload, scope = await self._items({"Limit": MAX_TITLES + 1}, 8 * 1024 * 1024)
+        try:
+            items, count = payload["Items"], payload["TotalRecordCount"]
+            if (not isinstance(items, list) or type(count) is not int or count != len(items)
+                    or not 0 < count <= MAX_TITLES or payload.get("StartIndex", 0) != 0
+                    or any(not isinstance(x, dict) or x.get("Type") != "Movie" for x in items)):
+                raise ValueError()
+            value = {"schema": 1, **scope, "titles": [x["Name"] for x in items]}
+            validate_index(value, scope["user_id"], scope["library_id"])
+            return value
+        except (KeyError, ValueError, TypeError, AttributeError):
             raise CatalogueUnavailable() from None
 
 

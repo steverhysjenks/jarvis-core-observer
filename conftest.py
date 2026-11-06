@@ -28,7 +28,7 @@ SAFE_MODULES = {
 
 # Override inherited live configuration BEFORE application imports/collection.
 os.environ.update({
-    "VIDEO_ENABLED": "false", "JELLYFIN_URL": "https://jellyfin.invalid",
+    "VIDEO_ENABLED": "false", "VIDEO_TITLE_INDEX_FILE": "", "JELLYFIN_URL": "https://jellyfin.invalid",
     "JELLYFIN_TOKEN": "isolated-test-placeholder", "JELLYFIN_TOKEN_FILE": "", "JELLYFIN_USER_ID": "fixture-user",
     "JELLYFIN_MOVIE_LIBRARY_ID": "fixture-library", "VIDEO_TV_SOURCE": "fixture-hdmi",
     "HA_URL": "http://ha.invalid", "HA_TOKEN": "isolated-test-placeholder",
@@ -89,6 +89,24 @@ def verify_isolation():
 
 
 verify_isolation()
+
+
+@pytest.fixture(autouse=True)
+def isolated_video_title_index(request, monkeypatch, tmp_path):
+    if request.module.__name__.rsplit(".", 1)[-1] not in {
+        "test_video", "test_video_playback", "test_assist_video_contract"
+    }:
+        return
+    import json
+    from app.video import title_index
+    evidence = json.loads((ROOT / "tests/fixtures/jellyfin-movies-20261106.json").read_text())
+    path = tmp_path / "catalogue-titles.json"
+    path.write_text(json.dumps({"schema": 1, "user_id": "b" * 32, "library_id": "c" * 32,
+                                "titles": [m["title"] for m in evidence["movies"]]}))
+    monkeypatch.setenv("VIDEO_TITLE_INDEX_FILE", str(path))
+    monkeypatch.setenv("JELLYFIN_USER_ID", "b" * 32)
+    monkeypatch.setenv("JELLYFIN_MOVIE_LIBRARY_ID", "c" * 32)
+    monkeypatch.setattr(title_index, "_last_good", None)
 
 
 def safe_module(path):

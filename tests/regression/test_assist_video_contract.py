@@ -165,9 +165,9 @@ async def test_two_turn_canonical_session_routes_to_same_video_operation(followu
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("text", ["Get Forrest Gump ready on the TV", "Ask Jarvis to play KPop Demon Hunters",
+@pytest.mark.parametrize("text", ["Get Forrest Gump ready on the TV", "Ask Jarvis to play the movie KPop Demon Hunters",
     "Play the movie On the Waterfront", "Play the movie The Girl on the Train", "Play Captain America on the TV",
-    "Play Shawshank Redemption"])
+    "Play Moana", "Play Top Gun", "Play Top Gun: Maverick", "Play Moana 2"])
 async def test_explicit_video_bypasses_only_generic_nutrition_followup(text, chain):
     c = chain
     await c.method(c.agent, c.user(text), c.chat())
@@ -244,5 +244,37 @@ async def test_nutrition_read_keeps_its_existing_owned_contract(chain, monkeypat
     await c.method(c.agent, c.user("How many calories have I had today?"), c.chat())
     assert c.transport.responses[-1]["domain"] == "nutrition"
     assert c.transport.responses[-1]["operation_status"] == "read" and not c.transport.semantic
+    c.catalogue.lookup.assert_not_awaited()
+    c.ha.call_service.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text,expected", [("Play Top Gun","not_found"),("Play Moana","ambiguous"),
+    ("Play Top Gun: Maverick","confirmation_required"),("Play Moana 2","confirmation_required")])
+async def test_observed_bare_catalogue_outcomes_remain_video_owned(text,expected,chain):
+    from app.adapters.jellyfin import resolve
+    c=chain
+    rows=json.loads((ROOT/"tests/fixtures/jellyfin-movies-20261106.json").read_text())["movies"]
+    items=[{"Id":m["item_id"],"Name":m["title"],"ProductionYear":m["year"],"Type":"Movie",
+            "ProviderIds":{"Tmdb":m["tmdb_id"]},"LocationType":"FileSystem","MediaSources":[{"Id":"offline-stub"}]} for m in rows]
+    async def lookup(title,year=None):return resolve({"Items":items,"TotalRecordCount":len(items)},title,year)
+    c.catalogue.lookup.side_effect=lookup
+    await c.method(c.agent,c.user(text),c.chat())
+    assert c.transport.responses[-1]["domain"]=="video"
+    assert c.transport.responses[-1]["operation_status"]==expected and not c.transport.semantic
+    assert dialogue.load(c.nutrition_context)=={"query":""}
+    c.ha.call_service.assert_not_awaited()
+    c.forbidden.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["Play the song Moana","Play the album Moana 2","Ask Jarvis to play Taylor Swift"])
+async def test_indexed_film_names_do_not_consume_explicit_or_unrelated_music(text,chain,monkeypatch):
+    c=chain
+    music=AsyncMock(return_value=CapabilityResult(True,False,"music","fixture",{}))
+    monkeypatch.setattr(dispatcher.music_capability,"handle",music)
+    await c.method(c.agent,c.user(text),c.chat())
+    music.assert_awaited_once()
+    assert dialogue.load(c.nutrition_context)=={"query":""}
     c.catalogue.lookup.assert_not_awaited()
     c.ha.call_service.assert_not_awaited()

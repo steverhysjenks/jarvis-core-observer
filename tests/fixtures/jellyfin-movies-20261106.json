@@ -1,0 +1,10 @@
+{
+  "provenance": "Read-only installed-adapter queries against the selected appletv/Movies catalogue, 6 November 2026. Identity fields only; no paths or credentials. Top Gun (1986) is expected not_found.",
+  "movies": [
+    {"title": "Forrest Gump", "year": 1994, "item_id": "5c8a0c44030e8e81479a7e65d65cd505", "tmdb_id": "13"},
+    {"title": "Top Gun: Maverick", "year": 2022, "item_id": "861bdff1fac26c51eef0bd66537e0df5", "tmdb_id": "361743"},
+    {"title": "Moana", "year": 2016, "item_id": "59dd72b51c64cf90220a5e84c3451973", "tmdb_id": "277834"},
+    {"title": "Moana 2", "year": 2024, "item_id": "7db3a5d1dad17386e5b65a5457fcc093", "tmdb_id": "1241982"},
+    {"title": "Moana", "year": 2026, "item_id": "8d7864ecec21e42f77c90d379e94e972", "tmdb_id": "1108427"}
+  ]
+}
