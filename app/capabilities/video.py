@@ -10,6 +10,8 @@ from app.video.intents import recognise
 from app.video.playback import VideoNotReady, VideoPlayback, fingerprint
 
 DEADLINE_SECONDS = 12.0
+PLAY_DEADLINE_SECONDS = 18.0
+PLAYBACK_RESERVE_SECONDS = 4.0
 CONFIRM_SECONDS = 60.0
 CACHE_SECONDS = 300.0
 MAX_REQUESTS = 128
@@ -67,7 +69,8 @@ class VideoCapability:
         started = False
         reserved = False
         try:
-            async with asyncio.timeout(DEADLINE_SECONDS):
+            timeout = PLAY_DEADLINE_SECONDS if intent.operation == "play" else DEADLINE_SECONDS
+            async with asyncio.timeout(timeout) as budget:
                 async with self.lock:
                     now = time.monotonic()
                     self.requests = {k: v for k, v in self.requests.items() if v[0] > now}
@@ -88,23 +91,23 @@ class VideoCapability:
                     elif self.uncertain:
                         result = reply("uncertain", "Playback state needs operator verification. No further command was sent.", intent)
                     else:
-                        async def launch(movie):
+                        async def mutate(action, *args):
                             nonlocal started
                             started = self.uncertain = True
-                            await self.playback.launch(movie)
-                        result = await self.execute(intent, request, launch)
+                            await action(*args)
+                        result = await self.execute(intent, request, mutate, budget.when())
                     self.requests[key] = time.monotonic() + CACHE_SECONDS, signature, result
                     return result
         except (TimeoutError, HomeAssistantError, CatalogueUnavailable, VideoNotReady, ValueError, TypeError):
             result = reply("uncertain" if started else "unavailable",
-                           "I could not verify playback. Check the TV; I will not retry." if started else
+                           "I could not verify the TV request. Check the TV. I will not retry." if started else
                            "Video is unavailable or the TV is not ready. No playback command was sent.", intent)
             # Do not extend or overwrite another request's receipt on a lock-wait timeout.
             if reserved:
                 self.requests[key] = time.monotonic() + CACHE_SECONDS, signature, result
             return result
 
-    async def execute(self, intent, request, launch):
+    async def execute(self, intent, request, mutate, deadline):
         caller = context(request)
         pending = self.pending.pop(caller, None)
         approved = intent.operation == "confirm"
@@ -123,12 +126,18 @@ class VideoCapability:
                          "I could not find that exact film in the movie library.", intent, choices=choices)
         if approved and movie != expected_movie:
             return reply("state_changed", "The catalogue result changed. Start a new video request.", intent)
-        states = await self.playback.ready(source)
-        if approved and fingerprint(states) != expected_view:
-            return reply("state_changed", "Viewing changed since confirmation was requested. Start again.", intent)
         if intent.operation == "prepare":
+            await self.playback.ready(source)
             return reply("prepared", "The film is resolved and the TV is ready. No playback was requested.",
                          intent, movie=movie.as_dict())
+        if not source.strip() or len(source) > 100:
+            raise VideoNotReady()
+        states = await self.playback.snapshot()
+        apple, sony = states
+        if sony["state"] != "off" and sony["attributes"].get("source") != source:
+            raise VideoNotReady()
+        if approved and fingerprint(states) != expected_view:
+            return reply("state_changed", "Viewing changed since confirmation was requested. Start again.", intent)
         if not approved and self.playback.occupied(states):
             if request.conversation_id and request.origin:
                 self.pending[caller] = (time.monotonic() + CONFIRM_SECONDS, intent, movie,
@@ -138,10 +147,20 @@ class VideoCapability:
             else:
                 speech = "The TV may be in use. A stable conversation is required for explicit video takeover confirmation."
             return reply("confirmation_required", speech, intent)
-        # Final read immediately before the only mutation. Never treat changed viewing as consent.
+        waking = sony["state"] == "off" or apple["state"] in {"off", "standby"}
+        if waking:
+            async with asyncio.timeout_at(deadline - PLAYBACK_RESERVE_SECONDS):
+                states = await self.playback.wake(states, source, mutate)
+        if (await self.playback.automation())["current"]:
+            raise VideoNotReady()
+        # Never treat changed viewing as consent.
         if fingerprint(await self.playback.snapshot()) != fingerprint(states):
+            if waking:
+                raise VideoNotReady()
             return reply("state_changed", "Viewing changed before playback. No command was sent.", intent)
-        await launch(movie)
+        if waking and asyncio.get_running_loop().time() >= deadline - PLAYBACK_RESERVE_SECONDS:
+            raise VideoNotReady()
+        await mutate(self.playback.launch, movie)
         if not await self.playback.verify(movie, source):
             return reply("uncertain", "I sent the request but could not verify playback. Check the TV; I will not retry.", intent)
         self.uncertain = False

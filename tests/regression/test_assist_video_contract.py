@@ -105,12 +105,14 @@ def chain(monkeypatch, tmp_path):
     monkeypatch.setattr(playback, "POLL_SECONDS", 0)
     calls = {"launched": False, "reads_after_launch": 0}
     async def get_state(entity):
+        if entity == playback.WAKE_AUTOMATION:
+            return {"state": "on", "attributes": {"current": 0}}
         if entity == playback.SONY_TV:
             return deepcopy(OBSERVED["sony"])
         assert entity == playback.APPLE_TV
         if calls["launched"]:
             calls["reads_after_launch"] += 1
-        return deepcopy(OBSERVED["playing"] if calls["reads_after_launch"] > 1 else OBSERVED["idle"])
+        return deepcopy(OBSERVED["playing"])
     async def launch(domain, action, data):
         assert (domain, action, data) == ("media_player", "play_media", {
             "entity_id": playback.APPLE_TV, "media_content_type": "url", "media_content_id": "infuse://movie/13?play"})

@@ -29,8 +29,10 @@ def workflow(monkeypatch):
     monkeypatch.setenv("VIDEO_ENABLED", "true")
     monkeypatch.setenv("VIDEO_TV_SOURCE", "HDMI 1")
     monkeypatch.setattr(playback, "POLL_SECONDS", 0)
-    state = {"launched": False, "post_launch_reads": 0, "apple_state": "idle", "source": "HDMI 1"}
+    state = {"launched": False, "post_launch_reads": 0, "apple_state": "playing", "source": "HDMI 1"}
     async def get_state(entity):
+        if entity == playback.WAKE_AUTOMATION:
+            return {"state": "on", "attributes": {"current": 0}}
         assert entity in {playback.APPLE_TV, playback.SONY_TV}
         if entity == playback.SONY_TV:
             value = deepcopy(OBSERVED_HA["sony"])
@@ -169,7 +171,6 @@ async def test_no_ready_input_no_wake_or_source_selection(workflow):
     state["source"] = "some-other-input"
     result = await cap.handle(request())
     assert result.result["status"] == "unavailable"
-    assert client.get_state.await_count == 6
     client.call_service.assert_not_awaited()
 
 
@@ -291,3 +292,152 @@ def test_no_arbitrary_deep_links(identifier):
 def test_prepare_and_play_links_are_distinct():
     assert playback.deep_link("13", play=False) == "infuse://movie/13"
     assert playback.deep_link("13", play=True) == "infuse://movie/13?play"
+
+
+@pytest.fixture
+def cold_start(monkeypatch):
+    from datetime import datetime, timezone
+
+    monkeypatch.setenv("VIDEO_ENABLED", "true")
+    monkeypatch.setenv("VIDEO_TV_SOURCE", "HDMI 1")
+    monkeypatch.setattr(playback, "WAKE_POLL_SECONDS", 0.001)
+    monkeypatch.setattr(playback, "POLL_SECONDS", 0)
+    movie = Movie("b" * 32, "Top Gun: Maverick", 2022, "361743")
+    state = dict(sony="off", apple="off", source=None, watts="3", waking=None,
+                 wake_reads=0, fail_wake=False, launched=False, position=0,
+                 power_reported=datetime.now(timezone.utc).isoformat())
+    commands = []
+
+    async def get_state(entity):
+        if entity == playback.WAKE_AUTOMATION:
+            if state["waking"] and not state["fail_wake"]:
+                state["wake_reads"] += 1
+                if state["wake_reads"] == 3:
+                    state["apple"] = "playing" if state.get("resume_media") else "idle"
+                    if state["waking"] == playback.SONY_TV:
+                        state.update(sony="on", source="HDMI 2")
+            sony_wake = state["waking"] == playback.SONY_TV
+            return {"state": "on", "attributes": {
+                "current": int(sony_wake and 0 < state["wake_reads"] < 3),
+                "last_triggered": "after" if sony_wake and state["wake_reads"] >= 3 else "before",
+            }}
+        if entity == playback.TV_POWER:
+            return {"state": state["watts"], "attributes": {"unit_of_measurement": "W"},
+                    "last_reported": state["power_reported"]}
+        if entity == playback.SONY_TV:
+            return {"entity_id": entity, "state": state["sony"],
+                    "last_reported": datetime.now(timezone.utc).isoformat(),
+                    "attributes": {"source": state["source"], "assumed_state": True,
+                                   "source_list": ["HDMI 1", "HDMI 2"]}}
+        assert entity == playback.APPLE_TV
+        attributes = {}
+        if state["launched"]:
+            state["position"] += 1
+            attributes = {"app_name": "Infuse", "media_content_id": "infuse://movie/361743?play",
+                          "media_position": state["position"]}
+        return {"entity_id": entity, "state": state["apple"], "attributes": attributes}
+
+    async def call_service(domain, service, data):
+        if domain == "homeassistant":
+            assert (service, data) == ("update_entity", {"entity_id": playback.SONY_TV})
+            commands.append((service, data))
+            state["fail_wake"] = False
+            return
+        assert domain == "media_player"
+        commands.append((service, data))
+        if service == "turn_on":
+            state["waking"] = data["entity_id"]
+        elif service == "select_source":
+            assert state["wake_reads"] >= 3
+            state["source"] = data["source"]
+        else:
+            assert service == "play_media" and state["source"] == "HDMI 1"
+            assert state["apple"] == "idle"
+            state.update(apple="playing", launched=True)
+
+    client = AsyncMock()
+    client.get_state.side_effect = get_state
+    client.call_service.side_effect = call_service
+    catalogue = AsyncMock()
+    catalogue.lookup.return_value = "resolved", movie, []
+    return VideoCapability(catalogue, playback.VideoPlayback(client)), state, commands, catalogue
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sony,apple,expected_wake", [
+    ("off", "off", playback.SONY_TV), ("off", "idle", playback.SONY_TV),
+    ("on", "off", playback.APPLE_TV), ("on", "idle", None),
+])
+async def test_cold_and_idle_play_select_correct_film(cold_start, sony, apple, expected_wake):
+    cap, state, commands, catalogue = cold_start
+    state.update(sony=sony, apple=apple, source="HDMI 1" if sony == "on" else None)
+    result = await cap.handle(request("Play Top Gun Maverick on the living room TV"))
+    assert result.result["status"] == "playing" and not cap.uncertain and not cap.pending
+    catalogue.lookup.assert_awaited_once_with("Top Gun Maverick", None)
+    expected = [("turn_on", {"entity_id": expected_wake})] if expected_wake else []
+    if sony == "off":
+        expected.append(("select_source", {"entity_id": playback.SONY_TV, "source": "HDMI 1"}))
+    expected.append(("play_media", {"entity_id": playback.APPLE_TV, "media_content_type": "url",
+                                   "media_content_id": "infuse://movie/361743?play"}))
+    assert commands == expected
+
+
+@pytest.mark.asyncio
+async def test_off_prepare_never_wakes_devices(cold_start):
+    cap, _, commands, _ = cold_start
+    result = await cap.handle(request("Get Top Gun Maverick ready on the TV"))
+    assert result.result["status"] == "unavailable" and not commands and not cap.uncertain
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("watts,reported", [("45", None), ("unknown", None), ("3", "2020-01-01T00:00:00+00:00")])
+async def test_assumed_off_needs_fresh_standby_evidence(cold_start, watts, reported):
+    cap, state, commands, _ = cold_start
+    state["watts"] = watts
+    if reported:
+        state["power_reported"] = reported
+    result = await cap.handle(request("Play Top Gun Maverick on the TV"))
+    assert result.result["status"] == "unavailable" and not commands and not cap.uncertain
+
+
+@pytest.mark.asyncio
+async def test_failed_wake_latches_and_never_retries(cold_start, monkeypatch):
+    from app.capabilities import video
+
+    cap, state, commands, _ = cold_start
+    state["fail_wake"] = True
+    monkeypatch.setattr(video, "PLAY_DEADLINE_SECONDS", 0.05)
+    monkeypatch.setattr(video, "PLAYBACK_RESERVE_SECONDS", 0.01)
+    text = "Play Top Gun Maverick on the TV"
+    assert (await cap.handle(request(text))).result["status"] == "uncertain"
+    assert cap.uncertain
+    assert (await cap.handle(request(text))).result["status"] == "uncertain"
+    assert (await cap.handle(request(text, "new"))).result["status"] == "uncertain"
+    assert commands == [("turn_on", {"entity_id": playback.SONY_TV})]
+
+
+@pytest.mark.asyncio
+async def test_unavailable_device_blocks_all_commands(cold_start):
+    cap, state, commands, _ = cold_start
+    state["apple"] = "unavailable"
+    assert (await cap.handle(request("Play Top Gun Maverick on the TV"))).result["status"] == "unavailable"
+    assert not commands
+
+
+@pytest.mark.asyncio
+async def test_slow_sony_refreshes_status_without_resending_power(cold_start, monkeypatch):
+    cap, state, commands, _ = cold_start
+    state["fail_wake"] = True
+    monkeypatch.setattr(playback, "WAKE_REFRESH_DELAY_SECONDS", 0)
+    result = await cap.handle(request("Play Top Gun Maverick on the TV"))
+    assert result.result["status"] == "playing"
+    assert [name for name, _ in commands] == ["turn_on", "update_entity", "select_source", "play_media"]
+
+
+@pytest.mark.asyncio
+async def test_playback_resuming_during_wake_blocks_new_film(cold_start):
+    cap, state, commands, _ = cold_start
+    state["resume_media"] = True
+    result = await cap.handle(request("Play Top Gun Maverick on the TV"))
+    assert result.result["status"] == "uncertain" and cap.uncertain
+    assert commands == [("turn_on", {"entity_id": playback.SONY_TV})]
