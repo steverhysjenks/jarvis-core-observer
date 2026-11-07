@@ -267,20 +267,8 @@ query=null
 retrieval_type=general
 query=null
 
-For non-music requests:
-is_music=false
-intent="other"
-retrieval_type=null
-query=null
-genre=null
-era=null
-year_from=null
-year_to=null
-mood=null
-activity=null
-similar_to=null
-
-Return JSON only with exactly these fields:
+For a non-music request return only {"is_music":false,"intent":"other","confidence":1.0}.
+For a music request return JSON with exactly these fields:
 {
   "is_music": true,
   "intent": "play",
