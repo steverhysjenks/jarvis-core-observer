@@ -34,6 +34,10 @@ The in-memory lock, confirmation and duplicate receipts assume the existing sing
 
 Actual HA/Infuse telemetry may not expose the TMDB deep link or frequent position updates, in which case the strict success verifier will intentionally fail. The user physically confirmed a Forrest Gump launch on 1 November via `infuse://movie/13?play`. Reported HA observations were idle then playing, Infuse, title Forrest Gump, duration 8525, position 0 unchanged, no film content ID, and Sony on HDMI 1. Offline fixtures preserve this evidence and return uncertain. Installed Infuse version and its Now Playing API setting remain explicitly UNVERIFIED as of 5 November. Firecore documents an opt-in API from Infuse 8.5.9 with mDNS discovery and read-only `/nowplaying`, including TMDB identity and position, but no update-cadence guarantee. No trusted adapter/endpoint is verified or implemented. These unknowns do not block disabled-feature merge; authoritative identity and actual progress within the bounded deadline remain mandatory before enablement. Infuse library mode and Jellyfin-to-Infuse mapping still need acceptance. The existing turn-on/Infuse-launch automation is neither invoked nor changed; external interactions require physical acceptance. No wake/source automation is added as a workaround. See [video runbook](../video-playback.md) for the explicit live-acceptance gate.
 
+### 7 November 2026 cold-start amendment
+
+The owner requires play to start from standby. The preceding ready-only decision is superseded for play. Core uses the existing Sony wake service and waits for the existing Sony-triggered Apple TV and Infuse automation. An existing plug power reading corroborates assumed Sony standby. Correct input, idle playback and the bounded wake budget gate the single movie command. The same uncertainty latch now covers wake and input selection. Prepare remains read-only. See the [video runbook](../video-playback.md) for the detailed gates and timeout budgets.
+
 ## References
 
 - [ADR 003: grounded media](003-retrieval-grounded-music.md).

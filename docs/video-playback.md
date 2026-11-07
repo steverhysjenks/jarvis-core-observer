@@ -49,11 +49,15 @@ Configure `VIDEO_TV_SOURCE` only after verifying the existing Sony input label. 
 
 ## Prepare, play and occupied viewing
 
-Prepare performs catalogue lookup and up to three readiness samples. It changes no device state and does not open the details screen. Physical film staging is DEFERRED; prepared is only a read-only catalogue/readiness result. The TV must already be on the configured input and Apple TV ready; there is no wake-up or source selection implementation.
+Prepare performs catalogue lookup and up to three readiness samples. It requires an awake Apple TV and Sony on the configured HDMI input. It makes no service calls.
 
-An on TV is conservatively occupied even when HA cannot identify viewing. Play requests therefore normally return a takeover prompt. To approve, say “confirm video takeover” within 60 seconds in the same stable conversation. Confirmation is single-use, context-bound and cancelled by “cancel video takeover”, a replacement video request, expiry or changed evidence. Catalogue identity and relevant viewing attributes are rechecked. No command is sent if they change.
+Play resolves the exact film before accessing the TV. For a cold start Core sends Sony one `media_player.turn_on`. When Sony reports assumed off, the existing TV and Apple TV power meter must corroborate standby with a reading of 0–5 W reported within three minutes. Missing, stale or higher readings stop the request before power-on. The threshold is specific to this paired plug and conservatively excludes observed active viewing and higher standby readings.
 
-Only after approval and final state comparison does Core send one `media_player.play_media` request with an internally constructed `infuse://movie/<TMDB-ID>?play` link. No retry, remote command, seeking, source/power change or script/automation invocation exists. All work shares a 12-second deadline; there are no orphaned or delayed playback tasks.
+Sony's off-to-on transition triggers the existing **Wake Apple TV and Launch Jellyfin** automation. It wakes Apple TV and opens Infuse. Core waits for that run to finish and Apple TV to report idle, then selects the configured Sony HDMI input once if needed. Sony's slow standby poll may require one read refresh. With Sony already on the correct HDMI input and Apple TV off, Core can wake Apple TV directly while the automation is idle. Correct input and idle playback must be observed before launch.
+
+Playing, paused or opaque Apple TV state requires the existing takeover confirmation. Sony playing/paused and stale assumed-on Sony evidence are also treated as occupied. A pre-existing wrong Sony input stops the request. Confirmations still bind the same movie, viewing fingerprint, source and conversation for 60 seconds. A change during wake stops the operation before the film command.
+
+Play has an 18-second total budget inside Router's 20-second timeout, with at least four seconds reserved after wake for launch and verification. Prepare and confirmation retain their 12-second budget. Core sends one validated `infuse://movie/<TMDB-ID>?play` link. Any uncertain wake, input selection or launch latches further playback until operator reconciliation. The HA automation may finish its own started run after Core's deadline.
 
 Success requires Infuse app, exact selected TMDB content link, playing state, correct TV source and increasing position across samples. If HA reports only a friendly title or insufficient position updates, the result is uncertain. Do not relax this to successful app launch. A possibly delivered command latches the capability against further play commands until an operator inspects reality. Do not automatically stop playback or issue compensating actions; those could disrupt someone else's viewing.
 
