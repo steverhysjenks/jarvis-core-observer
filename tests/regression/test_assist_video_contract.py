@@ -236,6 +236,27 @@ async def test_music_and_unclaimed_conversation_keep_existing_router_paths(chain
 
 
 @pytest.mark.asyncio
+async def test_compact_non_music_classification_reaches_semantic_router(chain, monkeypatch):
+    from app.capabilities import music
+    from app.music import semantic
+
+    classify = AsyncMock(return_value={"is_music": False, "intent": "other", "confidence": 1.0})
+    play = AsyncMock()
+    monkeypatch.setattr(semantic, "chat_json", classify)
+    monkeypatch.setattr(music, "play_explicit", play)
+    monkeypatch.setattr(dispatcher.music_capability, "handle", music.MusicCapability().handle)
+
+    text = "How much solar am I generating?"
+    result = await chain.method(chain.agent, chain.user(text), chain.chat())
+
+    assert chain.transport.semantic == [text]
+    assert result.conversation_id == CANONICAL_ID
+    classify.assert_awaited_once()
+    play.assert_not_awaited()
+    chain.ha.call_service.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_nutrition_read_keeps_its_existing_owned_contract(chain, monkeypatch):
     c = chain
     async def native(name, arguments, **kwargs):
