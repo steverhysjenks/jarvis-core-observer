@@ -66,6 +66,79 @@ class VideoPlayback:
             raise VideoNotReady()
         return attributes
 
+    async def verify_standby(self, sony):
+        if not sony["attributes"].get("assumed_state"):
+            return
+        state = await self.client.get_state(TV_POWER)
+        try:
+            watts = float(state["state"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise VideoNotReady() from exc
+        if (state.get("attributes", {}).get("unit_of_measurement") != "W"
+                or not recently_reported(state, POWER_MAX_AGE_SECONDS)
+                or not 0 <= watts <= STANDBY_WATTS):
+            raise VideoNotReady()
+
+    async def wake(self, states, source, mutate):
+        """Power on missing devices and wait for the existing automation to settle."""
+        _, sony = states
+        cold = sony["state"] == "off"
+        automation = await self.automation()
+        if automation["current"]:
+            raise VideoNotReady()
+        if cold:
+            await self.verify_standby(sony)
+        if fingerprint(await self.snapshot()) != fingerprint(states):
+            raise VideoNotReady()
+        apple_wake_sent = False
+        if cold:
+            await mutate(self.client.call_service, "media_player", "turn_on", {"entity_id": SONY_TV})
+        selected = False
+        refresh_after = asyncio.get_running_loop().time() + WAKE_REFRESH_DELAY_SECONDS if cold else None
+        while True:
+            states = await self.snapshot()
+            apple, sony = states
+            current = await self.automation()
+            triggered = current.get("last_triggered")
+            automation_finished = not current["current"] and (
+                not cold or (triggered and triggered != automation.get("last_triggered")))
+            if automation_finished and sony["state"] in {"on", "idle", "playing", "paused"}:
+                if apple["state"] in {"off", "standby"} and not apple_wake_sent:
+                    apple_wake_sent = True
+                    await mutate(self.client.call_service, "media_player", "turn_on", {"entity_id": APPLE_TV})
+                actual = sony["attributes"].get("source")
+                if actual == source and apple["state"] in {"idle", "on", "playing", "paused"}:
+                    return states
+                if actual and actual != source and not selected:
+                    selected = True
+                    await mutate(self.client.call_service, "media_player", "select_source",
+                                 {"entity_id": SONY_TV, "source": source})
+            if (refresh_after is not None and sony["state"] == "off"
+                    and asyncio.get_running_loop().time() >= refresh_after):
+                refresh_after = None
+                await self.client.call_service("homeassistant", "update_entity", {"entity_id": SONY_TV})
+            await asyncio.sleep(WAKE_POLL_SECONDS)
+
+    async def ready(self, source):
+        if not isinstance(source, str) or not source.strip() or len(source) > 100:
+            raise VideoNotReady()
+        for attempt in range(3):
+            states = await self.snapshot()
+            apple, sony = states
+            if (apple["state"] in {"idle", "on", "paused", "playing"}
+                    and sony["state"] in {"on", "idle", "playing", "paused"}
+                    and sony["attributes"].get("source") == source):
+                return states
+            if attempt < 2:
+                await asyncio.sleep(POLL_SECONDS)
+        raise VideoNotReady()
+
+    async def launch(self, movie):
+        await self.client.call_service("media_player", "play_media", {
+            "entity_id": APPLE_TV, "media_content_type": "url",
+            "media_content_id": deep_link(movie.tmdb_id, play=True),
+        })
+
     @staticmethod
     def observed_movie(apple, movie):
         attrs = apple["attributes"]
