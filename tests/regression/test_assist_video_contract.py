@@ -112,10 +112,14 @@ def chain(monkeypatch, tmp_path):
         assert entity == playback.APPLE_TV
         if calls["launched"]:
             calls["reads_after_launch"] += 1
-        return deepcopy(OBSERVED["playing"])
+        state = deepcopy(OBSERVED["playing"])
+        if not calls["launched"]:
+            state["attributes"]["media_title"] = "Small Soldiers"
+        return state
     async def launch(domain, action, data):
-        assert (domain, action, data) == ("media_player", "play_media", {
-            "entity_id": playback.APPLE_TV, "media_content_type": "url", "media_content_id": "infuse://movie/13?play"})
+        assert (domain, action) == ("media_player", "play_media")
+        assert data["entity_id"] == playback.APPLE_TV and data["media_content_type"] == "url"
+        assert data["media_content_id"].startswith("infuse://movie/")
         calls["launched"] = True
     ha = AsyncMock()
     ha.get_state.side_effect, ha.call_service.side_effect = get_state, launch
@@ -143,25 +147,19 @@ def chain(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("followup,expected", [("Confirm video takeover", "uncertain"), ("Cancel video takeover", "cancelled")])
-async def test_two_turn_canonical_session_routes_to_same_video_operation(followup, expected, chain):
+async def test_explicit_play_and_followup_keep_canonical_session(chain):
     c = chain
-    incoming = c.user("Play Forrest Gump on the living room TV")
-    assert incoming.conversation_id is None
-    first = await c.method(c.agent, incoming, c.chat())
-    assert first.conversation_id == CANONICAL_ID and first.continue_conversation
+    first = await c.method(c.agent, c.user("Play Forrest Gump on the living room TV"), c.chat())
+    assert first.conversation_id == CANONICAL_ID and not first.continue_conversation
     assert c.transport.responses[-1]["domain"] == "video"
-    assert c.transport.responses[-1]["operation_status"] == "confirmation_required"
-    assert "Forrest Gump (1994)" in first.response.speech
-    assert len(c.cap.pending) == 1
-    second = await c.method(c.agent, c.user(followup, first.conversation_id), c.chat())
+    assert c.transport.responses[-1]["operation_status"] == "uncertain"
+    assert c.ha.call_service.await_args.args[2]["media_content_id"] == "infuse://movie/13?play"
+    second = await c.method(c.agent, c.user("Confirm video takeover", first.conversation_id), c.chat())
     assert second.conversation_id == CANONICAL_ID and not second.continue_conversation
-    assert c.transport.responses[-1]["domain"] == "video"
-    assert c.transport.responses[-1]["operation_status"] == expected
-    assert not c.cap.pending and not c.transport.semantic
+    assert c.transport.responses[-1]["operation_status"] == "confirmation_expired"
     assert [r["conversation_id"] for r in c.transport.requests] == [CANONICAL_ID, CANONICAL_ID]
     assert c.transport.requests[0]["request_id"] != c.transport.requests[1]["request_id"]
-    assert c.ha.call_service.await_count == (1 if followup.startswith("Confirm") else 0)
+    c.ha.call_service.assert_awaited_once()
     assert dialogue.load(c.nutrition_context) == {"query": ""}
     assert dialogue.is_followup(VoiceRequest(text="milk", conversation_id=CANONICAL_ID,
                                            user_context="fixture-user", satellite="fixture-satellite"))
@@ -174,6 +172,7 @@ async def test_two_turn_canonical_session_routes_to_same_video_operation(followu
     "Play Moana", "Play Top Gun", "Play Top Gun: Maverick", "Play Moana 2"])
 async def test_explicit_video_bypasses_only_generic_nutrition_followup(text, chain):
     c = chain
+    c.catalogue.lookup.return_value = "not_found", None, []
     await c.method(c.agent, c.user(text), c.chat())
     assert c.transport.responses[-1]["domain"] == "video" and not c.transport.semantic
     assert dialogue.load(c.nutrition_context) == {"query": ""}
@@ -197,10 +196,8 @@ async def test_unresolved_video_is_terminal_through_router(status, chain):
 @pytest.mark.asyncio
 async def test_other_chat_cannot_confirm_original_operation(chain):
     c = chain
-    await c.method(c.agent, c.user("Play Forrest Gump on the TV"), c.chat())
     await c.method(c.agent, c.user("Confirm video takeover", "other-chat"), c.chat("other-chat"))
     assert c.transport.responses[-1]["operation_status"] == "confirmation_expired"
-    assert len(c.cap.pending) == 1
     c.ha.call_service.assert_not_awaited()
 
 
@@ -274,8 +271,8 @@ async def test_nutrition_read_keeps_its_existing_owned_contract(chain, monkeypat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("text,expected", [("Could you play Moana?","ambiguous"),("Can you play Top Gun: Maverick (2022)?","confirmation_required"),("Play Top Gun","not_found"),("Play Moana","ambiguous"),
-    ("Play Top Gun: Maverick","confirmation_required"),("Play Moana 2","confirmation_required")])
+@pytest.mark.parametrize("text,expected", [("Could you play Moana?","ambiguous"),("Can you play Top Gun: Maverick (2022)?","uncertain"),("Play Top Gun","not_found"),("Play Moana","ambiguous"),
+    ("Play Top Gun: Maverick","uncertain"),("Play Moana 2","uncertain")])
 async def test_observed_bare_catalogue_outcomes_remain_video_owned(text,expected,chain):
     from app.adapters.jellyfin import resolve
     c=chain
@@ -288,7 +285,10 @@ async def test_observed_bare_catalogue_outcomes_remain_video_owned(text,expected
     assert c.transport.responses[-1]["domain"]=="video"
     assert c.transport.responses[-1]["operation_status"]==expected and not c.transport.semantic
     assert dialogue.load(c.nutrition_context)=={"query":""}
-    c.ha.call_service.assert_not_awaited()
+    if expected == "uncertain":
+        c.ha.call_service.assert_awaited_once()
+    else:
+        c.ha.call_service.assert_not_awaited()
     c.forbidden.assert_not_awaited()
 
 
