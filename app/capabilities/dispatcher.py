@@ -31,6 +31,14 @@ async def dispatch_capabilities(
     allowing wider Jarvis routing to continue.
     """
 
+    # Router negotiated an extended video operation. An ownership change
+    # between calls must not dispatch music or fall through to inference.
+    if request._video_deadline == "extended-v1":
+        result = await video_capability.handle(request)
+        if not result.claimed:
+            raise ValueError("Cold-start request is no longer owned by video")
+        return result
+
     for capability in CAPABILITIES:
         result = await capability.handle(request)
 

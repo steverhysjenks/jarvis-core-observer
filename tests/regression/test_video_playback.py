@@ -3,6 +3,7 @@ import asyncio
 from copy import deepcopy
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -294,6 +295,12 @@ def test_prepare_and_play_links_are_distinct():
     assert playback.deep_link("13", play=True) == "infuse://movie/13?play"
 
 
+def cold_request(text, identity="initial"):
+    req = request(text, identity)
+    req._video_deadline = "extended-v1"
+    return req
+
+
 @pytest.fixture
 def cold_start(monkeypatch):
     from datetime import datetime, timezone
@@ -312,7 +319,11 @@ def cold_start(monkeypatch):
         if entity == playback.WAKE_AUTOMATION:
             if state["waking"] and not state["fail_wake"]:
                 state["wake_reads"] += 1
-                if state["wake_reads"] == 3:
+                ready = state.get("ready")
+                if (ready is None and state["wake_reads"] == 3) or (
+                    ready is not None and not state.get("ready_reported") and ready()
+                ):
+                    state["ready_reported"] = True
                     state["apple"] = "playing" if state.get("resume_media") else "idle"
                     if state["waking"] == playback.SONY_TV:
                         state.update(sony="on", source="HDMI 2")
@@ -371,7 +382,7 @@ def cold_start(monkeypatch):
 async def test_cold_and_idle_play_select_correct_film(cold_start, sony, apple, expected_wake):
     cap, state, commands, catalogue = cold_start
     state.update(sony=sony, apple=apple, source="HDMI 1" if sony == "on" else None)
-    result = await cap.handle(request("Play Top Gun Maverick on the living room TV"))
+    result = await cap.handle(cold_request("Play Top Gun Maverick on the living room TV"))
     assert result.result["status"] == "playing" and not cap.uncertain and not cap.pending
     catalogue.lookup.assert_awaited_once_with("Top Gun Maverick", None)
     expected = [("turn_on", {"entity_id": expected_wake})] if expected_wake else []
@@ -385,7 +396,7 @@ async def test_cold_and_idle_play_select_correct_film(cold_start, sony, apple, e
 @pytest.mark.asyncio
 async def test_off_prepare_never_wakes_devices(cold_start):
     cap, _, commands, _ = cold_start
-    result = await cap.handle(request("Get Top Gun Maverick ready on the TV"))
+    result = await cap.handle(cold_request("Get Top Gun Maverick ready on the TV"))
     assert result.result["status"] == "unavailable" and not commands and not cap.uncertain
 
 
@@ -396,7 +407,7 @@ async def test_assumed_off_needs_fresh_standby_evidence(cold_start, watts, repor
     state["watts"] = watts
     if reported:
         state["power_reported"] = reported
-    result = await cap.handle(request("Play Top Gun Maverick on the TV"))
+    result = await cap.handle(cold_request("Play Top Gun Maverick on the TV"))
     assert result.result["status"] == "unavailable" and not commands and not cap.uncertain
 
 
@@ -406,13 +417,13 @@ async def test_failed_wake_latches_and_never_retries(cold_start, monkeypatch):
 
     cap, state, commands, _ = cold_start
     state["fail_wake"] = True
-    monkeypatch.setattr(video, "PLAY_DEADLINE_SECONDS", 0.05)
+    monkeypatch.setattr(video, "COLD_PLAY_DEADLINE_SECONDS", 0.05)
     monkeypatch.setattr(video, "PLAYBACK_RESERVE_SECONDS", 0.01)
     text = "Play Top Gun Maverick on the TV"
-    assert (await cap.handle(request(text))).result["status"] == "uncertain"
+    assert (await cap.handle(cold_request(text))).result["status"] == "uncertain"
     assert cap.uncertain
-    assert (await cap.handle(request(text))).result["status"] == "uncertain"
-    assert (await cap.handle(request(text, "new"))).result["status"] == "uncertain"
+    assert (await cap.handle(cold_request(text))).result["status"] == "uncertain"
+    assert (await cap.handle(cold_request(text, "new"))).result["status"] == "uncertain"
     assert commands == [("turn_on", {"entity_id": playback.SONY_TV})]
 
 
@@ -420,7 +431,7 @@ async def test_failed_wake_latches_and_never_retries(cold_start, monkeypatch):
 async def test_unavailable_device_blocks_all_commands(cold_start):
     cap, state, commands, _ = cold_start
     state["apple"] = "unavailable"
-    assert (await cap.handle(request("Play Top Gun Maverick on the TV"))).result["status"] == "unavailable"
+    assert (await cap.handle(cold_request("Play Top Gun Maverick on the TV"))).result["status"] == "unavailable"
     assert not commands
 
 
@@ -429,7 +440,7 @@ async def test_slow_sony_refreshes_status_without_resending_power(cold_start, mo
     cap, state, commands, _ = cold_start
     state["fail_wake"] = True
     monkeypatch.setattr(playback, "WAKE_REFRESH_DELAY_SECONDS", 0)
-    result = await cap.handle(request("Play Top Gun Maverick on the TV"))
+    result = await cap.handle(cold_request("Play Top Gun Maverick on the TV"))
     assert result.result["status"] == "playing"
     assert [name for name, _ in commands] == ["turn_on", "update_entity", "select_source", "play_media"]
 
@@ -438,6 +449,64 @@ async def test_slow_sony_refreshes_status_without_resending_power(cold_start, mo
 async def test_playback_resuming_during_wake_blocks_new_film(cold_start):
     cap, state, commands, _ = cold_start
     state["resume_media"] = True
-    result = await cap.handle(request("Play Top Gun Maverick on the TV"))
+    result = await cap.handle(cold_request("Play Top Gun Maverick on the TV"))
     assert result.result["status"] == "uncertain" and cap.uncertain
     assert commands == [("turn_on", {"entity_id": playback.SONY_TV})]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wake_seconds", [28, 34])
+async def test_cold_start_waits_for_late_readiness(cold_start, monkeypatch, wake_seconds):
+    cap, state, commands, _ = cold_start
+    elapsed = 0.0
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+
+    async def advance(delay):
+        nonlocal elapsed
+        elapsed += delay
+
+    monkeypatch.setattr(loop, "time", lambda: start + elapsed)
+    monkeypatch.setattr(playback, "WAKE_POLL_SECONDS", 0.5)
+    monkeypatch.setattr(playback, "WAKE_REFRESH_DELAY_SECONDS", 60)
+    monkeypatch.setattr(playback, "asyncio", SimpleNamespace(sleep=advance, get_running_loop=lambda: loop))
+    state["ready"] = lambda: elapsed >= wake_seconds
+
+    result = await cap.handle(cold_request("Play Top Gun Maverick on the TV"))
+    assert result.result["status"] == "playing"
+    assert wake_seconds <= elapsed <= wake_seconds + 1
+    assert [service for service, _ in commands] == ["turn_on", "select_source", "play_media"]
+    assert commands[-1][1]["media_content_id"] == "infuse://movie/361743?play"
+
+
+@pytest.mark.asyncio
+async def test_offer_does_not_actuate_or_consume_operation_identity(cold_start):
+    cap, _, commands, _ = cold_start
+    text = "Play Top Gun Maverick on the TV"
+    assert (await cap.handle(request(text, "legacy"))).result["status"] == "unavailable"
+    probe = request(text)
+    probe._video_deadline = "negotiate-v1"
+    offer = await cap.handle(probe)
+    assert offer.result == {"status": "video_deadline_required", "request_id": probe.request_id}
+    assert not commands and not cap.uncertain
+    assert (await cap.handle(cold_request(text))).result["status"] == "playing"
+    assert sum(service == "play_media" for service, _ in commands) == 1
+
+
+@pytest.mark.asyncio
+async def test_persistent_hold_blocks_restart_but_permits_read_only_prepare(workflow, tmp_path, monkeypatch):
+    cap, client, catalogue, state = workflow
+    cap.hold_path = tmp_path / "video-uncertain"
+    # Windows does not support fsync on a directory. Linux CI exercises it.
+    import os
+    if os.name == "nt":
+        monkeypatch.setattr(VideoCapability, "sync_hold_directory", lambda self: None)
+    state["apple_state"] = "idle"
+    assert (await cap.handle(request())).result["status"] == "uncertain"
+    assert cap.hold_path.is_file()
+    new_process = VideoCapability(catalogue, cap.playback, hold_path=cap.hold_path)
+    client.call_service.reset_mock()
+    assert (await new_process.handle(request(identity="new"))).result["status"] == "uncertain"
+    assert (await new_process.handle(request("Get Forrest Gump ready on the TV", "prepare"))).result["status"] == "prepared"
+    client.call_service.assert_not_awaited()
+    assert new_process.held() and cap.hold_path.is_file()

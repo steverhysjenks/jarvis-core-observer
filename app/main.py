@@ -270,6 +270,7 @@ async def repeat_last_voice_message(
 async def request_handler(
     request: VoiceRequest,
     authorization: str | None = Header(default=None),
+    x_jarvis_video_deadline: str | None = Header(default=None),
 ):
     """
     Process an inbound Jarvis request.
@@ -294,6 +295,7 @@ async def request_handler(
             detail="Unauthorized",
         )
 
+    request._video_deadline = x_jarvis_video_deadline
     try:
         return await handle_voice_request(request)
 
