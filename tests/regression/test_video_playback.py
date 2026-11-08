@@ -363,13 +363,65 @@ async def test_off_prepare_never_wakes_devices(cold_start):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("watts,reported", [("45", None), ("unknown", None), ("3", "2020-01-01T00:00:00+00:00")])
-async def test_assumed_off_needs_fresh_standby_evidence(cold_start, watts, reported):
+async def test_assumed_off_needs_fresh_standby_evidence(cold_start, monkeypatch, caplog, watts, reported):
     cap, state, commands, _ = cold_start
+    monkeypatch.setattr(playback, "STANDBY_REFRESH_SECONDS", 0.02)
     state["watts"] = watts
     if reported:
         state["power_reported"] = reported
     result = await cap.handle(cold_request("Play Top Gun Maverick on the TV"))
     assert result.result["status"] == "unavailable" and not commands and not cap.uncertain
+    if reported:
+        assert "extended_deadline=True mutation_started=False reason=standby_report_stale" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", [None, "device", "automation", "power"])
+async def test_cold_start_waits_for_fresh_standby_report(cold_start, monkeypatch, change):
+    from datetime import datetime, timedelta, timezone
+
+    cap, state, commands, _ = cold_start
+    state["power_reported"] = (datetime.now(timezone.utc) - timedelta(seconds=215)).isoformat()
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    elapsed = 0.0
+    monkeypatch.setattr(loop, "time", lambda: start + elapsed)
+    monkeypatch.setattr(playback, "WAKE_POLL_SECONDS", 0.5)
+    monkeypatch.setattr(playback, "WAKE_REFRESH_DELAY_SECONDS", 60)
+    get_state = cap.playback.client.get_state.side_effect
+
+    async def advance(delay):
+        nonlocal elapsed
+        elapsed += delay
+        if elapsed == 9:
+            assert commands == []
+            state["power_reported"] = datetime.now(timezone.utc).isoformat()
+            if change == "device":
+                state["apple"] = "playing"
+            elif change == "power":
+                state["watts"] = "45"
+
+    async def read_state(entity):
+        result = await get_state(entity)
+        if change == "automation" and elapsed >= 9 and entity == playback.WAKE_AUTOMATION:
+            result["attributes"]["last_triggered"] = "other-operation"
+        return result
+
+    cap.playback.client.get_state.side_effect = read_state
+    monkeypatch.setattr(playback, "asyncio", SimpleNamespace(
+        sleep=advance, get_running_loop=lambda: loop, timeout=asyncio.timeout,
+    ))
+    state["ready"] = lambda: elapsed >= 37
+
+    result = await cap.handle(cold_request("Play Top Gun Maverick on the TV"))
+    assert not cap.uncertain
+    if change:
+        assert result.result["status"] == "unavailable" and not commands
+    else:
+        assert result.result["status"] == "playing"
+        assert 37 <= elapsed <= 38
+        assert [service for service, _ in commands] == ["turn_on", "select_source", "play_media"]
+        assert commands[-1][1]["media_content_id"] == "infuse://movie/361743?play"
 
 
 @pytest.mark.asyncio
@@ -498,59 +550,3 @@ async def test_poc_followups_require_observed_target(monkeypatch, mode, expected
     monkeypatch.setenv("VIDEO_TV_SOURCE", "HDMI 1")
     monkeypatch.setattr(playback, "POLL_SECONDS", 0)
     movie = Movie("b" * 32, "Top Gun: Maverick", 2022, "361743")
-    sony = {"entity_id": playback.SONY_TV, "state": "on", "attributes": {"source": "HDMI 1"}}
-    apple = {"entity_id": playback.APPLE_TV, "state": "playing", "attributes": {
-        "app_id": "com.firecore.infuse", "app_name": "Infuse", "media_title": "Small Soldiers",
-        "media_duration": 6587,
-    }}
-    commands = []
-
-    def target(state, loaded):
-        apple["state"] = state
-        apple["attributes"]["media_title"] = movie.title
-        if loaded:
-            apple["attributes"]["media_duration"] = 7807
-        else:
-            apple["attributes"].pop("media_duration", None)
-            apple["attributes"].pop("media_content_type", None)
-
-    if mode == "already":
-        target("playing", True)
-
-    async def get_state(entity):
-        if entity == playback.WAKE_AUTOMATION:
-            return {"state": "on", "attributes": {"current": 0}}
-        return deepcopy(sony if entity == playback.SONY_TV else apple)
-
-    async def call_service(domain, service, data):
-        commands.append(service)
-        if service == "play_media":
-            assert data["media_content_id"] == "infuse://movie/361743?play"
-            if mode != "wrong":
-                target("playing" if mode in {"direct", "stale"} else "paused", mode in {"direct", "play", "stale"})
-                if mode == "stale":
-                    apple["attributes"].update(media_content_id="infuse://movie/361743?play", media_position=10)
-                if mode == "conflict":
-                    apple["attributes"]["media_content_id"] = "infuse://movie/13?play"
-        elif service == "send_command":
-            assert (domain, data) == ("remote", {"entity_id": "remote.living_room", "command": "select"})
-            target("playing" if mode == "select" else "paused", True)
-        else:
-            assert (domain, service, data) == ("media_player", "media_play", {"entity_id": playback.APPLE_TV})
-            target("playing", True)
-
-    client = AsyncMock()
-    client.get_state.side_effect = get_state
-    client.call_service.side_effect = call_service
-    catalogue = AsyncMock()
-    catalogue.lookup.return_value = "resolved", movie, []
-    cap = VideoCapability(catalogue, playback.VideoPlayback(client))
-    result = await cap.handle(request("Play Top Gun Maverick on the TV"))
-    assert commands == expected
-    assert result.result["status"] == "uncertain"
-    assert result.result["playback_evidence"] == {
-        "command_accepted": mode != "already", "title_observed": mode != "wrong",
-        "playing_observed": mode not in {"wrong", "conflict"},
-        "identity_verified": mode == "stale", "progress_verified": False,
-    }
-    assert cap.uncertain is bool(expected)

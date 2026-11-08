@@ -14,6 +14,7 @@ WAKE_AUTOMATION = "automation.wake_apple_tv_and_launch_jellyfin"
 TV_POWER = "sensor.spare_sonoff_plug_power"
 STANDBY_WATTS = 5
 POWER_MAX_AGE_SECONDS = 180
+STANDBY_REFRESH_SECONDS = 10.0
 WAKE_POLL_SECONDS = 0.5
 WAKE_REFRESH_DELAY_SECONDS = 2.0
 POLL_SECONDS = 0.25
@@ -21,7 +22,9 @@ VERIFY_ATTEMPTS = 24
 
 
 class VideoNotReady(Exception):
-    pass
+    def __init__(self, reason="not_ready"):
+        super().__init__(reason)
+        self.reason = reason
 
 
 def deep_link(tmdb_id, *, play):
@@ -36,14 +39,6 @@ def fingerprint(states):
                  ("app_id", "app_name", "media_content_id", "media_title", "source"))) for s in states)
 
 
-def recently_reported(state, max_age):
-    try:
-        reported = datetime.fromisoformat(state["last_reported"])
-        return 0 <= (datetime.now(timezone.utc) - reported).total_seconds() <= max_age
-    except (KeyError, TypeError, ValueError):
-        return False
-
-
 class VideoPlayback:
     def __init__(self, client=ha_client):
         self.client = client
@@ -55,7 +50,7 @@ class VideoPlayback:
             if (not isinstance(value, dict) or value.get("entity_id") != entity
                     or value.get("state") not in {"off", "standby", "on", "idle", "playing", "paused"}
                     or not isinstance(value.get("attributes"), dict)):
-                raise VideoNotReady()
+                raise VideoNotReady("device_snapshot_invalid")
             states.append(value)
         return states
 
@@ -63,21 +58,40 @@ class VideoPlayback:
         state = await self.client.get_state(WAKE_AUTOMATION)
         attributes = state.get("attributes", {})
         if state.get("state") != "on" or type(attributes.get("current")) is not int:
-            raise VideoNotReady()
+            raise VideoNotReady("wake_automation_unavailable")
         return attributes
 
-    async def verify_standby(self, sony):
-        if not sony["attributes"].get("assumed_state"):
-            return
+    async def standby_report_age(self):
         state = await self.client.get_state(TV_POWER)
         try:
             watts = float(state["state"])
         except (KeyError, TypeError, ValueError) as exc:
-            raise VideoNotReady() from exc
+            raise VideoNotReady("standby_power_invalid") from exc
         if (state.get("attributes", {}).get("unit_of_measurement") != "W"
-                or not recently_reported(state, POWER_MAX_AGE_SECONDS)
                 or not 0 <= watts <= STANDBY_WATTS):
-            raise VideoNotReady()
+            raise VideoNotReady("standby_power_out_of_range")
+        try:
+            reported = datetime.fromisoformat(state["last_reported"])
+            age = (datetime.now(timezone.utc) - reported).total_seconds()
+        except (KeyError, TypeError, ValueError) as exc:
+            raise VideoNotReady("standby_timestamp_invalid") from exc
+        if age < 0:
+            raise VideoNotReady("standby_timestamp_invalid")
+        return age
+
+    async def verify_standby(self, sony):
+        """Return whether a passive refresh was needed to prove standby."""
+        if (not sony["attributes"].get("assumed_state")
+                or await self.standby_report_age() <= POWER_MAX_AGE_SECONDS):
+            return False
+        try:
+            async with asyncio.timeout(STANDBY_REFRESH_SECONDS):
+                while True:
+                    await asyncio.sleep(WAKE_POLL_SECONDS)
+                    if await self.standby_report_age() <= POWER_MAX_AGE_SECONDS:
+                        return True
+        except TimeoutError as exc:
+            raise VideoNotReady("standby_report_stale") from exc
 
     async def wake(self, states, source, mutate):
         """Power on missing devices and wait for the existing automation to settle."""
@@ -85,11 +99,13 @@ class VideoPlayback:
         cold = sony["state"] == "off"
         automation = await self.automation()
         if automation["current"]:
-            raise VideoNotReady()
-        if cold:
-            await self.verify_standby(sony)
+            raise VideoNotReady("wake_automation_active")
+        if cold and await self.verify_standby(sony):
+            current = await self.automation()
+            if current["current"] or current.get("last_triggered") != automation.get("last_triggered"):
+                raise VideoNotReady("wake_automation_changed")
         if fingerprint(await self.snapshot()) != fingerprint(states):
-            raise VideoNotReady()
+            raise VideoNotReady("device_state_changed")
         apple_wake_sent = False
         if cold:
             await mutate(self.client.call_service, "media_player", "turn_on", {"entity_id": SONY_TV})

@@ -1,6 +1,8 @@
 """Bounded, default-off movie workflow; request ownership never falls through."""
 import asyncio
+import logging
 import os
+import re
 from pathlib import Path
 import time
 
@@ -17,6 +19,8 @@ PLAYBACK_RESERVE_SECONDS = 6.0
 VIDEO_HOLD_PATH = Path("/var/lib/jarvis-core/video-uncertain")
 CACHE_SECONDS = 300.0
 MAX_REQUESTS = 128
+
+logger = logging.getLogger("uvicorn.error").getChild("jarvis.video")
 
 
 def reply(status, speech, intent, **data):
@@ -141,7 +145,14 @@ class VideoCapability:
                         return result
                     self.requests[key] = time.monotonic() + CACHE_SECONDS, signature, result
                     return result
-        except (OSError, HomeAssistantError, CatalogueUnavailable, VideoNotReady, ValueError, TypeError):
+        except (OSError, HomeAssistantError, CatalogueUnavailable, VideoNotReady, ValueError, TypeError) as exc:
+            request_id = request.request_id
+            logger.warning(
+                "Video operation stopped request_id=%s operation=%s extended_deadline=%s mutation_started=%s reason=%s",
+                request_id if isinstance(request_id, str) and re.fullmatch(r"[a-f0-9]{32}", request_id) else "-",
+                intent.operation, extended, started,
+                exc.reason if isinstance(exc, VideoNotReady) else type(exc).__name__,
+            )
             result = reply("uncertain" if started else "unavailable",
                            "I could not verify the TV request. Check the TV. I will not retry." if started else
                            "Video is unavailable or the TV is not ready. No playback command was sent.", intent,
@@ -164,7 +175,7 @@ class VideoCapability:
             return reply("prepared", "The film is resolved and the TV is ready. No playback was requested.",
                          intent, movie=movie.as_dict())
         if not source.strip() or len(source) > 100:
-            raise VideoNotReady()
+            raise VideoNotReady("tv_source_invalid")
         states = await self.playback.snapshot()
         apple, sony = states
         waking = sony["state"] == "off" or apple["state"] in {"off", "standby"}
@@ -174,20 +185,20 @@ class VideoCapability:
                 if request._video_deadline == "negotiate-v1" and intent.operation == "play":
                     return reply("video_deadline_required", "The TV needs the cold-start budget.", intent,
                                  request_id=request.request_id)
-                raise VideoNotReady()
+                raise VideoNotReady("extended_deadline_required")
             async with asyncio.timeout_at(deadline - PLAYBACK_RESERVE_SECONDS):
                 states = await self.playback.wake(states, source, mutate)
         elif needs_input:
             states = await self.playback.wake(states, source, mutate)
         if (await self.playback.automation())["current"]:
-            raise VideoNotReady()
+            raise VideoNotReady("wake_automation_active")
         # Never treat changed viewing as consent.
         if fingerprint(await self.playback.snapshot()) != fingerprint(states):
             if waking or needs_input:
-                raise VideoNotReady()
+                raise VideoNotReady("device_state_changed")
             return reply("state_changed", "Viewing changed before playback. No command was sent.", intent)
         if waking and asyncio.get_running_loop().time() >= deadline - PLAYBACK_RESERVE_SECONDS:
-            raise VideoNotReady()
+            raise VideoNotReady("wake_budget_exhausted")
         apple = states[0]
         title, exact_id = self.playback.observed_movie(apple, movie)
         already_playing = apple["state"] == "playing" and (exact_id or (title and not apple["attributes"].get("media_content_id")))
