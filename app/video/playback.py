@@ -151,10 +151,8 @@ class VideoPlayback:
         exact_title = isinstance(title, str) and normalise(title) == normalise(movie.title)
         return exact_title, exact_id and (not title or exact_title)
 
-    async def complete(self, movie, source, before, mutate, *, command_accepted):
+    async def complete(self, movie, source, before, mutate, evidence):
         """Observe the launch and allow at most one contextual Select and one Play."""
-        evidence = {"command_accepted": command_accepted, "title_observed": False,
-                    "playing_observed": False, "identity_verified": False, "progress_verified": False}
         previous_position = None
         paused = None
         selected = played = False
@@ -166,6 +164,8 @@ class VideoPlayback:
                 break
             attrs = apple["attributes"]
             title, exact_id = self.observed_movie(apple, movie)
+            if evidence["title_observed"] and attrs.get("media_title") and not title:
+                break
             playing = apple["state"] == "playing" and (title or exact_id)
             evidence["title_observed"] |= title
             evidence["playing_observed"] |= playing
@@ -182,7 +182,7 @@ class VideoPlayback:
             # The PoC's initial paused title had no duration or position. An
             # identified loaded player instead needs the explicit Play action.
             observed = fingerprint(states)
-            if (command_accepted and not evidence["playing_observed"] and apple["state"] == "paused"
+            if (evidence["command_accepted"] and not evidence["playing_observed"] and apple["state"] == "paused"
                     and title and (not attrs.get("media_content_id") or exact_id)
                     and observed != fingerprint(before)):
                 duration = attrs.get("media_duration")
@@ -210,4 +210,3 @@ class VideoPlayback:
                 paused = None
             if attempt + 1 < VERIFY_ATTEMPTS:
                 await asyncio.sleep(POLL_SECONDS)
-        return evidence

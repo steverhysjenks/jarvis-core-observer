@@ -96,6 +96,8 @@ class VideoCapability:
         signature = request.text, request.area
         started = False
         reserved = False
+        evidence = dict.fromkeys(("command_accepted", "title_observed", "playing_observed",
+                                  "identity_verified", "progress_verified"), False)
         try:
             extended = request._video_deadline == "extended-v1" and intent.operation == "play"
             timeout = (COLD_PLAY_DEADLINE_SECONDS if extended else
@@ -127,7 +129,7 @@ class VideoCapability:
                                 self.persist_hold()
                                 started = self.uncertain = True
                             await action(*args)
-                        result = await self.execute(intent, request, mutate, budget.when())
+                        result = await self.execute(intent, request, mutate, budget.when(), evidence)
                     if result.result["status"] == "playing" and started:
                         if self.hold_path is not None:
                             self.hold_path.unlink()
@@ -142,13 +144,14 @@ class VideoCapability:
         except (OSError, HomeAssistantError, CatalogueUnavailable, VideoNotReady, ValueError, TypeError):
             result = reply("uncertain" if started else "unavailable",
                            "I could not verify the TV request. Check the TV. I will not retry." if started else
-                           "Video is unavailable or the TV is not ready. No playback command was sent.", intent)
+                           "Video is unavailable or the TV is not ready. No playback command was sent.", intent,
+                           **({"playback_evidence": evidence} if started else {}))
             # Do not extend or overwrite another request's receipt on a lock-wait timeout.
             if reserved:
                 self.requests[key] = time.monotonic() + CACHE_SECONDS, signature, result
             return result
 
-    async def execute(self, intent, request, mutate, deadline):
+    async def execute(self, intent, request, mutate, deadline, evidence):
         source = os.environ.get("VIDEO_TV_SOURCE", "")
         if room_for(intent, request) is None:
             return reply("unsupported_room", "Only the living room TV is configured for video.", intent)
@@ -190,7 +193,8 @@ class VideoCapability:
         already_playing = apple["state"] == "playing" and (exact_id or (title and not apple["attributes"].get("media_content_id")))
         if not already_playing:
             await mutate(self.playback.launch, movie)
-        evidence = await self.playback.complete(movie, source, states, mutate, command_accepted=not already_playing)
+            evidence["command_accepted"] = True
+        await self.playback.complete(movie, source, states, mutate, evidence)
         if evidence["identity_verified"] and evidence["progress_verified"]:
             return reply("playing", "Verified the requested film is playing on the living room TV.",
                          intent, movie=movie.as_dict(), playback_evidence=evidence)
