@@ -550,3 +550,59 @@ async def test_poc_followups_require_observed_target(monkeypatch, mode, expected
     monkeypatch.setenv("VIDEO_TV_SOURCE", "HDMI 1")
     monkeypatch.setattr(playback, "POLL_SECONDS", 0)
     movie = Movie("b" * 32, "Top Gun: Maverick", 2022, "361743")
+    sony = {"entity_id": playback.SONY_TV, "state": "on", "attributes": {"source": "HDMI 1"}}
+    apple = {"entity_id": playback.APPLE_TV, "state": "playing", "attributes": {
+        "app_id": "com.firecore.infuse", "app_name": "Infuse", "media_title": "Small Soldiers",
+        "media_duration": 6587,
+    }}
+    commands = []
+
+    def target(state, loaded):
+        apple["state"] = state
+        apple["attributes"]["media_title"] = movie.title
+        if loaded:
+            apple["attributes"]["media_duration"] = 7807
+        else:
+            apple["attributes"].pop("media_duration", None)
+            apple["attributes"].pop("media_content_type", None)
+
+    if mode == "already":
+        target("playing", True)
+
+    async def get_state(entity):
+        if entity == playback.WAKE_AUTOMATION:
+            return {"state": "on", "attributes": {"current": 0}}
+        return deepcopy(sony if entity == playback.SONY_TV else apple)
+
+    async def call_service(domain, service, data):
+        commands.append(service)
+        if service == "play_media":
+            assert data["media_content_id"] == "infuse://movie/361743?play"
+            if mode != "wrong":
+                target("playing" if mode in {"direct", "stale"} else "paused", mode in {"direct", "play", "stale"})
+                if mode == "stale":
+                    apple["attributes"].update(media_content_id="infuse://movie/361743?play", media_position=10)
+                if mode == "conflict":
+                    apple["attributes"]["media_content_id"] = "infuse://movie/13?play"
+        elif service == "send_command":
+            assert (domain, data) == ("remote", {"entity_id": "remote.living_room", "command": "select"})
+            target("playing" if mode == "select" else "paused", True)
+        else:
+            assert (domain, service, data) == ("media_player", "media_play", {"entity_id": playback.APPLE_TV})
+            target("playing", True)
+
+    client = AsyncMock()
+    client.get_state.side_effect = get_state
+    client.call_service.side_effect = call_service
+    catalogue = AsyncMock()
+    catalogue.lookup.return_value = "resolved", movie, []
+    cap = VideoCapability(catalogue, playback.VideoPlayback(client))
+    result = await cap.handle(request("Play Top Gun Maverick on the TV"))
+    assert commands == expected
+    assert result.result["status"] == "uncertain"
+    assert result.result["playback_evidence"] == {
+        "command_accepted": mode != "already", "title_observed": mode != "wrong",
+        "playing_observed": mode not in {"wrong", "conflict"},
+        "identity_verified": mode == "stale", "progress_verified": False,
+    }
+    assert cap.uncertain is bool(expected)
