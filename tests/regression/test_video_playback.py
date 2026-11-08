@@ -287,7 +287,7 @@ def cold_start(monkeypatch):
                     state["ready_reported"] = True
                     state["apple"] = "playing" if state.get("resume_media") else "idle"
                     if state["waking"] == playback.SONY_TV:
-                        state.update(sony="on", source="HDMI 2")
+                        state.update(sony="on", source=state.get("wake_source", "HDMI 2"))
             sony_wake = state["waking"] == playback.SONY_TV
             return {"state": "on", "attributes": {
                 "current": int(sony_wake and 0 < state["wake_reads"] < 3),
@@ -363,13 +363,69 @@ async def test_off_prepare_never_wakes_devices(cold_start):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("watts,reported", [("45", None), ("unknown", None), ("3", "2020-01-01T00:00:00+00:00")])
-async def test_assumed_off_needs_fresh_standby_evidence(cold_start, watts, reported):
+async def test_assumed_off_needs_fresh_standby_evidence(cold_start, monkeypatch, caplog, watts, reported):
     cap, state, commands, _ = cold_start
+    monkeypatch.setattr(playback, "STANDBY_REFRESH_SECONDS", 0.02)
     state["watts"] = watts
     if reported:
         state["power_reported"] = reported
     result = await cap.handle(cold_request("Play Top Gun Maverick on the TV"))
     assert result.result["status"] == "unavailable" and not commands and not cap.uncertain
+    if reported:
+        assert "extended_deadline=True mutation_started=False reason=standby_report_stale" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", [None, "device", "automation", "power", "late_input"])
+async def test_cold_start_waits_for_fresh_standby_report(cold_start, monkeypatch, change):
+    from datetime import datetime, timedelta, timezone
+
+    cap, state, commands, _ = cold_start
+    state["power_reported"] = (datetime.now(timezone.utc) - timedelta(seconds=215)).isoformat()
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    elapsed = 0.0
+    monkeypatch.setattr(loop, "time", lambda: start + elapsed)
+    monkeypatch.setattr(playback, "WAKE_POLL_SECONDS", 0.5)
+    monkeypatch.setattr(playback, "WAKE_REFRESH_DELAY_SECONDS", 60)
+    get_state = cap.playback.client.get_state.side_effect
+
+    async def advance(delay):
+        nonlocal elapsed
+        elapsed += delay
+        if elapsed == 9:
+            assert commands == []
+            state["power_reported"] = datetime.now(timezone.utc).isoformat()
+            if change == "device":
+                state["apple"] = "playing"
+            elif change == "power":
+                state["watts"] = "45"
+
+    async def read_state(entity):
+        result = await get_state(entity)
+        if change == "automation" and elapsed >= 9 and entity == playback.WAKE_AUTOMATION:
+            result["attributes"]["last_triggered"] = "other-operation"
+        return result
+
+    cap.playback.client.get_state.side_effect = read_state
+    monkeypatch.setattr(playback, "asyncio", SimpleNamespace(
+        sleep=advance, get_running_loop=lambda: loop, timeout=asyncio.timeout,
+    ))
+    state["ready"] = lambda: elapsed >= 37
+    if change != "late_input":
+        state["wake_source"] = "HDMI 1"
+
+    result = await cap.handle(cold_request("Play Top Gun Maverick on the TV"))
+    if change == "late_input":
+        assert result.result["status"] == "uncertain" and cap.uncertain
+        assert [service for service, _ in commands] == ["turn_on", "select_source"]
+    elif change:
+        assert result.result["status"] == "unavailable" and not commands and not cap.uncertain
+    else:
+        assert result.result["status"] == "playing" and not cap.uncertain
+        assert 37 <= elapsed < 38
+        assert [service for service, _ in commands] == ["turn_on", "play_media"]
+        assert commands[-1][1]["media_content_id"] == "infuse://movie/361743?play"
 
 
 @pytest.mark.asyncio
