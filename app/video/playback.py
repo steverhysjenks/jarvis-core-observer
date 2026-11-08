@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import math
 import re
 
-from app.adapters.homeassistant import ha_client
+from app.adapters.homeassistant import HomeAssistantError, ha_client
 from app.adapters.jellyfin import normalise
 
 APPLE_TV = "media_player.living_room_3"
@@ -14,7 +14,7 @@ WAKE_AUTOMATION = "automation.wake_apple_tv_and_launch_jellyfin"
 TV_POWER = "sensor.spare_sonoff_plug_power"
 STANDBY_WATTS = 5
 POWER_MAX_AGE_SECONDS = 180
-STANDBY_REFRESH_SECONDS = 10.0
+POWER_READ_TIMEOUT_SECONDS = 1.0
 WAKE_POLL_SECONDS = 0.5
 WAKE_REFRESH_DELAY_SECONDS = 2.0
 POLL_SECONDS = 0.25
@@ -61,37 +61,26 @@ class VideoPlayback:
             raise VideoNotReady("wake_automation_unavailable")
         return attributes
 
-    async def standby_report_age(self):
-        state = await self.client.get_state(TV_POWER)
+    async def verify_standby(self):
+        """Veto reported standby only when a fresh meter sample contradicts it."""
+        try:
+            async with asyncio.timeout(POWER_READ_TIMEOUT_SECONDS):
+                state = await self.client.get_state(TV_POWER)
+        except (HomeAssistantError, TimeoutError, ValueError):
+            return
+        if not isinstance(state, dict) or state.get("entity_id") != TV_POWER:
+            return
+        attributes = state.get("attributes")
+        if not isinstance(attributes, dict) or attributes.get("unit_of_measurement") != "W":
+            return
         try:
             watts = float(state["state"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise VideoNotReady("standby_power_invalid") from exc
-        if (state.get("attributes", {}).get("unit_of_measurement") != "W"
-                or not 0 <= watts <= STANDBY_WATTS):
-            raise VideoNotReady("standby_power_out_of_range")
-        try:
             reported = datetime.fromisoformat(state["last_reported"])
             age = (datetime.now(timezone.utc) - reported).total_seconds()
-        except (KeyError, TypeError, ValueError) as exc:
-            raise VideoNotReady("standby_timestamp_invalid") from exc
-        if age < 0:
-            raise VideoNotReady("standby_timestamp_invalid")
-        return age
-
-    async def verify_standby(self, sony):
-        """Return whether a passive refresh was needed to prove standby."""
-        if (not sony["attributes"].get("assumed_state")
-                or await self.standby_report_age() <= POWER_MAX_AGE_SECONDS):
-            return False
-        try:
-            async with asyncio.timeout(STANDBY_REFRESH_SECONDS):
-                while True:
-                    await asyncio.sleep(WAKE_POLL_SECONDS)
-                    if await self.standby_report_age() <= POWER_MAX_AGE_SECONDS:
-                        return True
-        except TimeoutError as exc:
-            raise VideoNotReady("standby_report_stale") from exc
+        except (KeyError, TypeError, ValueError):
+            return
+        if 0 <= age <= POWER_MAX_AGE_SECONDS and math.isfinite(watts) and watts > STANDBY_WATTS:
+            raise VideoNotReady("standby_power_conflict")
 
     async def wake(self, states, source, mutate):
         """Power on missing devices and wait for the existing automation to settle."""
@@ -100,7 +89,8 @@ class VideoPlayback:
         automation = await self.automation()
         if automation["current"]:
             raise VideoNotReady("wake_automation_active")
-        if cold and await self.verify_standby(sony):
+        if cold:
+            await self.verify_standby()
             current = await self.automation()
             if current["current"] or current.get("last_triggered") != automation.get("last_triggered"):
                 raise VideoNotReady("wake_automation_changed")

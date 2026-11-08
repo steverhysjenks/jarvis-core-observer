@@ -38,6 +38,10 @@ Actual HA/Infuse telemetry may not expose the TMDB deep link or frequent positio
 
 The owner requires play to start from standby. The preceding ready-only decision is superseded for play. Core uses the existing Sony wake service and waits for the existing Sony-triggered Apple TV and Infuse automation. An existing plug power reading corroborates assumed Sony standby. Correct input, idle playback and the bounded wake budget gate the single movie command. The same uncertainty latch now covers wake and input selection. Prepare remains read-only. See the [video runbook](../video-playback.md) for the detailed gates and timeout budgets.
 
+### 8 November 2026 TV power-state amendment
+
+Home Assistant media-player entities provide primary state. When Sony reports off, Core reads the paired plug once as corroboration. Only a valid, fresh reading above 5 W vetoes wake. Stale or unavailable meter readings leave the HA device states in control. Core rechecks device state and automation activity before wake, and still requires observed readiness after wake. Unknown or unavailable media-player states block execution.
+
 ## References
 
 - [ADR 003: grounded media](003-retrieval-grounded-music.md).
