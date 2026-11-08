@@ -153,6 +153,8 @@ def pytest_collection_modifyitems(items):
 
 @pytest.fixture(autouse=True)
 def isolated_storage(monkeypatch, tmp_path):
+    from app.capabilities.video import video_capability
     from app.storage import deliveries, ledger
+    monkeypatch.setattr(video_capability, "hold_path", tmp_path / "video-uncertain")
     monkeypatch.setattr(ledger, "DATABASE_PATH", tmp_path / "ledger.db")
     monkeypatch.setattr(deliveries, "DATABASE_PATH", tmp_path / "deliveries.db")

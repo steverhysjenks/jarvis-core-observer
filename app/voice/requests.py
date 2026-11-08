@@ -2,7 +2,7 @@ from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 
 class NutritionSelection(BaseModel):
@@ -27,6 +27,8 @@ class NutritionHistory(BaseModel):
 
 
 class VoiceRequest(BaseModel):
+    _video_deadline: str | None = PrivateAttr(default=None)
+
     text: str = Field(
         min_length=1,
         max_length=500,
