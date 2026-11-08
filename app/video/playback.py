@@ -17,7 +17,7 @@ POWER_MAX_AGE_SECONDS = 180
 WAKE_POLL_SECONDS = 0.5
 WAKE_REFRESH_DELAY_SECONDS = 2.0
 POLL_SECONDS = 0.25
-VERIFY_ATTEMPTS = 12
+VERIFY_ATTEMPTS = 24
 
 
 class VideoNotReady(Exception):
@@ -121,6 +121,7 @@ class VideoPlayback:
                     latest = await self.snapshot()
                     fresh = latest[0]["attributes"]
                     if (fingerprint(latest) != observed or fresh.get("media_duration") != duration
+                            or fresh.get("media_content_type") != attrs.get("media_content_type")
                             or (fresh.get("media_position") is None) != (position is None)):
                         break
                     if loaded and not played:
