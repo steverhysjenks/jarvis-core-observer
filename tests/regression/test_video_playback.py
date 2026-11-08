@@ -396,7 +396,7 @@ async def test_cold_and_idle_play_select_correct_film(cold_start, sony, apple, e
 @pytest.mark.asyncio
 async def test_off_prepare_never_wakes_devices(cold_start):
     cap, _, commands, _ = cold_start
-    result = await cap.handle(cold_request("Get Top Gun Maverick ready on the TV"))
+    result = await cap.handle(request("Get Top Gun Maverick ready on the TV"))
     assert result.result["status"] == "unavailable" and not commands and not cap.uncertain
 
 
