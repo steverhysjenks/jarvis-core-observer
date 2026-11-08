@@ -71,26 +71,25 @@ async def test_prepare_is_read_only_and_separate(workflow):
 
 
 @pytest.mark.asyncio
-async def test_occupied_confirmation_launches_but_real_ha_evidence_stays_uncertain(workflow):
-    cap, client, catalogue, _ = workflow
-    first = await cap.handle(request())
-    assert first.result["status"] == "confirmation_required" and not first.handled
-    client.call_service.assert_not_awaited()
-    result = await cap.handle(request("Confirm video takeover", "confirm"))
-    assert not result.handled and result.result["status"] == "uncertain"
-    assert client.call_service.await_count == 1
+@pytest.mark.parametrize("old_state", ["paused", "playing"])
+async def test_explicit_film_replaces_previous_playback_without_confirmation(workflow, old_state):
+    cap, client, _, state = workflow
+    state["apple_state"] = old_state
+    result = await cap.handle(request())
+    assert result.result["status"] == "uncertain" and not result.handled
+    assert result.result["playback_evidence"]["command_accepted"]
+    client.call_service.assert_awaited_once()
     assert cap.uncertain
 
 
 @pytest.mark.asyncio
-async def test_duplicate_confirmation_concurrently_sends_exactly_one_command(workflow):
+async def test_duplicate_play_concurrently_sends_exactly_one_command(workflow):
     cap, client, _, _ = workflow
-    await cap.handle(request())
-    confirm = request("Confirm video takeover", "confirm")
-    a, b = await asyncio.gather(cap.handle(confirm), cap.handle(confirm))
+    play = request()
+    a, b = await asyncio.gather(cap.handle(play), cap.handle(play))
     assert a.result["status"] == b.result["status"] == "uncertain"
     assert b.result["receipt"] == {"recorded_outcome": "uncertain", "fresh_verification": False}
-    assert client.call_service.await_count == 1
+    client.call_service.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -99,43 +98,15 @@ async def test_request_id_reuse_for_different_details_is_rejected(workflow):
     await cap.handle(request())
     result = await cap.handle(request("Play the movie Dune on the TV"))
     assert result.result["status"] == "request_conflict"
-    client.call_service.assert_not_awaited()
+    client.call_service.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("field,value", [("conversation_id", "other"), ("user_context", "other"),
-    ("origin", "other"), ("satellite", "other"), ("listener", "other")])
-async def test_confirmation_cannot_cross_context(field, value, workflow):
+@pytest.mark.parametrize("phrase,status", [("Confirm video takeover", "confirmation_expired"),
+                                          ("Cancel video takeover", "cancelled")])
+async def test_legacy_takeover_phrases_never_start_playback(workflow, phrase, status):
     cap, client, _, _ = workflow
-    await cap.handle(request())
-    result = await cap.handle(request("Confirm video takeover", "confirm", **{field: value}))
-    assert result.result["status"] == "confirmation_expired"
-    client.call_service.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_expired_and_cancelled_confirmations_never_launch(workflow):
-    cap, client, _, _ = workflow
-    original = request()
-    await cap.handle(original)
-    pending = cap.pending[context(original)]
-    cap.pending[context(original)] = (0, *pending[1:])
-    assert (await cap.handle(request("Confirm video takeover", "expired"))).result["status"] == "confirmation_expired"
-    await cap.handle(request(identity="again"))
-    assert (await cap.handle(request("Cancel video takeover", "cancel"))).result["status"] == "cancelled"
-    assert (await cap.handle(request("Confirm video takeover", "after-cancel"))).result["status"] == "confirmation_expired"
-    client.call_service.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_changed_viewing_or_catalogue_requires_new_request(workflow):
-    cap, client, catalogue, state = workflow
-    await cap.handle(request())
-    state["apple_state"] = "paused"
-    assert (await cap.handle(request("Confirm video takeover", "changed"))).result["status"] == "state_changed"
-    await cap.handle(request(identity="again"))
-    catalogue.lookup.return_value = "resolved", Movie("b" * 32, "Forrest Gump", 1994, "999"), []
-    assert (await cap.handle(request("Confirm video takeover", "changed-film"))).result["status"] == "state_changed"
+    assert (await cap.handle(request(phrase))).result["status"] == status
     client.call_service.assert_not_awaited()
 
 
@@ -167,10 +138,14 @@ async def test_unresolved_film_never_contacts_ha(status, workflow):
 
 
 @pytest.mark.asyncio
-async def test_no_ready_input_no_wake_or_source_selection(workflow):
+async def test_unknown_input_is_not_assumed_ready(workflow):
     cap, client, _, state = workflow
-    state["source"] = "some-other-input"
-    result = await cap.handle(request())
+    state["source"] = None
+    from app.capabilities import video
+    # Keep the polling path bounded without needing to control a device.
+    from unittest.mock import patch
+    with patch.object(video, "PLAY_DEADLINE_SECONDS", 0.03):
+        result = await cap.handle(request())
     assert result.result["status"] == "unavailable"
     client.call_service.assert_not_awaited()
 
@@ -184,9 +159,8 @@ async def test_outage_before_or_during_command_fails_closed(stage, workflow):
     elif stage == "ha_read":
         client.get_state.side_effect = HomeAssistantError("private-upstream-error")
     else:
-        await cap.handle(request())
         client.call_service.side_effect = HomeAssistantError("private-upstream-error")
-    result = await cap.handle(request("Confirm video takeover", "confirm") if stage == "ha_command" else request())
+    result = await cap.handle(request())
     assert result.result["status"] == ("uncertain" if stage == "ha_command" else "unavailable")
     assert not result.handled and "private-upstream" not in str(result.as_dict())
     if stage == "ha_command":
@@ -201,7 +175,6 @@ async def test_outage_before_or_during_command_fails_closed(stage, workflow):
 async def test_command_timeout_cancels_and_blocks_automatic_retries(monkeypatch, workflow):
     from app.capabilities import video
     cap, client, _, _ = workflow
-    await cap.handle(request())
     cancelled = []
     async def slow(*args):
         try:
@@ -209,10 +182,10 @@ async def test_command_timeout_cancels_and_blocks_automatic_retries(monkeypatch,
         finally:
             cancelled.append(True)
     client.call_service.side_effect = slow
-    monkeypatch.setattr(video, "DEADLINE_SECONDS", 0.03)
-    result = await cap.handle(request("Confirm video takeover", "confirm"))
+    monkeypatch.setattr(video, "PLAY_DEADLINE_SECONDS", 0.03)
+    result = await cap.handle(request())
     assert result.result["status"] == "uncertain" and cap.uncertain and cancelled
-    assert (await cap.handle(request("Confirm video takeover", "confirm"))).result["status"] == "uncertain"
+    assert (await cap.handle(request())).result["status"] == "uncertain"
     assert (await cap.handle(request(identity="new"))).result["status"] == "uncertain"
     assert client.call_service.await_count == 1
 
@@ -220,7 +193,6 @@ async def test_command_timeout_cancels_and_blocks_automatic_retries(monkeypatch,
 @pytest.mark.asyncio
 async def test_caller_cancellation_keeps_uncertain_receipt_and_no_orphan(workflow):
     cap, client, _, _ = workflow
-    await cap.handle(request())
     entered = asyncio.Event()
     cancelled = []
     async def slow(*args):
@@ -230,7 +202,7 @@ async def test_caller_cancellation_keeps_uncertain_receipt_and_no_orphan(workflo
         finally:
             cancelled.append(True)
     client.call_service.side_effect = slow
-    confirm = request("Confirm video takeover", "confirm")
+    confirm = request()
     task = asyncio.create_task(cap.handle(confirm))
     await entered.wait()
     task.cancel()
@@ -244,8 +216,7 @@ async def test_caller_cancellation_keeps_uncertain_receipt_and_no_orphan(workflo
 @pytest.mark.asyncio
 async def test_realistic_idle_then_playing_without_identity_or_progress_never_verifies(workflow):
     cap, client, _, state = workflow
-    await cap.handle(request())
-    result = await cap.handle(request("Confirm video takeover", "confirm"))
+    result = await cap.handle(request())
     assert result.result["status"] == "uncertain" and not result.handled
     assert client.call_service.await_count == 1
     assert state["post_launch_reads"] == playback.VERIFY_ATTEMPTS
@@ -272,16 +243,6 @@ async def test_cached_receipt_is_never_fresh_state_evidence(outcome, workflow):
     client.get_state.assert_not_awaited()
     client.call_service.assert_not_awaited()
     catalogue.lookup.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_restart_discards_pending_confirmation_and_does_not_replay(workflow):
-    cap, client, catalogue, _ = workflow
-    await cap.handle(request())
-    restarted = VideoCapability(catalogue, playback.VideoPlayback(client))
-    result = await restarted.handle(request("Confirm video takeover", "confirm"))
-    assert result.result["status"] == "confirmation_expired"
-    client.call_service.assert_not_awaited()
 
 
 @pytest.mark.parametrize("identifier", [None, 13, "0", "-1", "1?play&url=bad", "https://bad.invalid"])
@@ -359,11 +320,11 @@ def cold_start(monkeypatch):
         if service == "turn_on":
             state["waking"] = data["entity_id"]
         elif service == "select_source":
-            assert state["wake_reads"] >= 3
+            assert state["sony"] == "on"
             state["source"] = data["source"]
         else:
             assert service == "play_media" and state["source"] == "HDMI 1"
-            assert state["apple"] == "idle"
+            assert state["apple"] in {"idle", "playing", "paused"}
             state.update(apple="playing", launched=True)
 
     client = AsyncMock()
@@ -377,13 +338,13 @@ def cold_start(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sony,apple,expected_wake", [
     ("off", "off", playback.SONY_TV), ("off", "idle", playback.SONY_TV),
-    ("on", "off", playback.APPLE_TV), ("on", "idle", None),
+    ("on", "off", playback.APPLE_TV), ("on", "idle", None), ("on", "paused", None),
 ])
 async def test_cold_and_idle_play_select_correct_film(cold_start, sony, apple, expected_wake):
     cap, state, commands, catalogue = cold_start
     state.update(sony=sony, apple=apple, source="HDMI 1" if sony == "on" else None)
     result = await cap.handle(cold_request("Play Top Gun Maverick on the living room TV"))
-    assert result.result["status"] == "playing" and not cap.uncertain and not cap.pending
+    assert result.result["status"] == "playing" and not cap.uncertain
     catalogue.lookup.assert_awaited_once_with("Top Gun Maverick", None)
     expected = [("turn_on", {"entity_id": expected_wake})] if expected_wake else []
     if sony == "off":
@@ -446,12 +407,12 @@ async def test_slow_sony_refreshes_status_without_resending_power(cold_start, mo
 
 
 @pytest.mark.asyncio
-async def test_playback_resuming_during_wake_blocks_new_film(cold_start):
+async def test_explicit_play_replaces_previous_film_resuming_during_wake(cold_start):
     cap, state, commands, _ = cold_start
     state["resume_media"] = True
     result = await cap.handle(cold_request("Play Top Gun Maverick on the TV"))
-    assert result.result["status"] == "uncertain" and cap.uncertain
-    assert commands == [("turn_on", {"entity_id": playback.SONY_TV})]
+    assert result.result["status"] == "playing" and not cap.uncertain
+    assert [name for name, _ in commands] == ["turn_on", "select_source", "play_media"]
 
 
 @pytest.mark.asyncio
@@ -510,3 +471,86 @@ async def test_persistent_hold_blocks_restart_but_permits_read_only_prepare(work
     assert (await new_process.handle(request("Get Forrest Gump ready on the TV", "prepare"))).result["status"] == "prepared"
     client.call_service.assert_not_awaited()
     assert new_process.held() and cap.hold_path.is_file()
+
+
+@pytest.mark.asyncio
+async def test_awake_sony_changes_wrong_hdmi_once(cold_start):
+    cap, state, commands, _ = cold_start
+    state.update(sony="on", apple="paused", source="HDMI 2")
+    assert (await cap.handle(request("Play Top Gun Maverick on the TV"))).result["status"] == "playing"
+    assert commands[0] == ("select_source", {"entity_id": playback.SONY_TV, "source": "HDMI 1"})
+    assert [service for service, _ in commands] == ["select_source", "play_media"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,expected", [
+    ("direct", ["play_media"]),
+    ("select", ["play_media", "send_command"]),
+    ("play", ["play_media", "media_play"]),
+    ("both", ["play_media", "send_command", "media_play"]),
+    ("wrong", ["play_media"]),
+    ("already", []),
+    ("stale", ["play_media"]),
+    ("conflict", ["play_media"]),
+])
+async def test_poc_followups_require_observed_target(monkeypatch, mode, expected):
+    monkeypatch.setenv("VIDEO_ENABLED", "true")
+    monkeypatch.setenv("VIDEO_TV_SOURCE", "HDMI 1")
+    monkeypatch.setattr(playback, "POLL_SECONDS", 0)
+    movie = Movie("b" * 32, "Top Gun: Maverick", 2022, "361743")
+    sony = {"entity_id": playback.SONY_TV, "state": "on", "attributes": {"source": "HDMI 1"}}
+    apple = {"entity_id": playback.APPLE_TV, "state": "playing", "attributes": {
+        "app_id": "com.firecore.infuse", "app_name": "Infuse", "media_title": "Small Soldiers",
+        "media_duration": 6587,
+    }}
+    commands = []
+
+    def target(state, loaded):
+        apple["state"] = state
+        apple["attributes"]["media_title"] = movie.title
+        if loaded:
+            apple["attributes"]["media_duration"] = 7807
+        else:
+            apple["attributes"].pop("media_duration", None)
+            apple["attributes"].pop("media_content_type", None)
+
+    if mode == "already":
+        target("playing", True)
+
+    async def get_state(entity):
+        if entity == playback.WAKE_AUTOMATION:
+            return {"state": "on", "attributes": {"current": 0}}
+        return deepcopy(sony if entity == playback.SONY_TV else apple)
+
+    async def call_service(domain, service, data):
+        commands.append(service)
+        if service == "play_media":
+            assert data["media_content_id"] == "infuse://movie/361743?play"
+            if mode != "wrong":
+                target("playing" if mode in {"direct", "stale"} else "paused", mode in {"direct", "play", "stale"})
+                if mode == "stale":
+                    apple["attributes"].update(media_content_id="infuse://movie/361743?play", media_position=10)
+                if mode == "conflict":
+                    apple["attributes"]["media_content_id"] = "infuse://movie/13?play"
+        elif service == "send_command":
+            assert (domain, data) == ("remote", {"entity_id": "remote.living_room", "command": "select"})
+            target("playing" if mode == "select" else "paused", True)
+        else:
+            assert (domain, service, data) == ("media_player", "media_play", {"entity_id": playback.APPLE_TV})
+            target("playing", True)
+
+    client = AsyncMock()
+    client.get_state.side_effect = get_state
+    client.call_service.side_effect = call_service
+    catalogue = AsyncMock()
+    catalogue.lookup.return_value = "resolved", movie, []
+    cap = VideoCapability(catalogue, playback.VideoPlayback(client))
+    result = await cap.handle(request("Play Top Gun Maverick on the TV"))
+    assert commands == expected
+    assert result.result["status"] == "uncertain"
+    assert result.result["playback_evidence"] == {
+        "command_accepted": mode != "already", "title_observed": mode != "wrong",
+        "playing_observed": mode not in {"wrong", "conflict"},
+        "identity_verified": mode == "stale", "progress_verified": False,
+    }
+    assert cap.uncertain is bool(expected)

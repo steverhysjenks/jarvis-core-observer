@@ -15,7 +15,6 @@ PLAY_DEADLINE_SECONDS = 18.0
 COLD_PLAY_DEADLINE_SECONDS = 44.0
 PLAYBACK_RESERVE_SECONDS = 6.0
 VIDEO_HOLD_PATH = Path("/var/lib/jarvis-core/video-uncertain")
-CONFIRM_SECONDS = 60.0
 CACHE_SECONDS = 300.0
 MAX_REQUESTS = 128
 
@@ -55,7 +54,6 @@ class VideoCapability:
         self.playback = playback or VideoPlayback()
         self.lock = asyncio.Lock()
         self.requests = {}
-        self.pending = {}
         # A possibly delivered command blocks further commands until operator reconciliation.
         self.uncertain = False
         self.hold_path = hold_path
@@ -106,7 +104,6 @@ class VideoCapability:
                 async with self.lock:
                     now = time.monotonic()
                     self.requests = {k: v for k, v in self.requests.items() if v[0] > now}
-                    self.pending = {k: v for k, v in self.pending.items() if v[0] > now}
                     if key in self.requests:
                         _, original, result = self.requests[key]
                         return receipt(result, intent) if original == signature else reply(
@@ -118,9 +115,10 @@ class VideoCapability:
                     self.requests[key] = now + CACHE_SECONDS, signature, result
                     reserved = True
                     if intent.operation == "cancel":
-                        self.pending.pop(context(request), None)
                         result = reply("cancelled", "Video takeover cancelled. No command was sent.", intent)
-                    elif intent.operation != "prepare" and self.held():
+                    elif intent.operation == "confirm":
+                        result = reply("confirmation_expired", "No video takeover is awaiting confirmation.", intent)
+                    elif intent.operation == "play" and self.held():
                         result = reply("uncertain", "Playback state needs operator verification. No further command was sent.", intent)
                     else:
                         async def mutate(action, *args):
@@ -130,6 +128,11 @@ class VideoCapability:
                                 started = self.uncertain = True
                             await action(*args)
                         result = await self.execute(intent, request, mutate, budget.when())
+                    if result.result["status"] == "playing" and started:
+                        if self.hold_path is not None:
+                            self.hold_path.unlink()
+                            self.sync_hold_directory()
+                        self.uncertain = False
                     if result.result["status"] == "video_deadline_required":
                         # This is a mutation-free offer, not an executed operation.
                         self.requests.pop(key)
@@ -146,24 +149,13 @@ class VideoCapability:
             return result
 
     async def execute(self, intent, request, mutate, deadline):
-        caller = context(request)
-        pending = self.pending.pop(caller, None)
-        approved = intent.operation == "confirm"
         source = os.environ.get("VIDEO_TV_SOURCE", "")
-        if approved:
-            if not pending or not request.conversation_id or not request.origin:
-                return reply("confirmation_expired", "No current video takeover exists in this conversation.", intent)
-            _, intent, expected_movie, expected_view, expected_source = pending
-            if source != expected_source:
-                return reply("state_changed", "TV configuration changed. Start a new video request.", intent)
         if room_for(intent, request) is None:
             return reply("unsupported_room", "Only the living room TV is configured for video.", intent)
         status, movie, choices = await self.catalogue.lookup(intent.title, intent.year)
         if status != "resolved":
             return reply(status, "Please give a unique film title and year." if status == "ambiguous" else
                          "I could not find that exact film in the movie library.", intent, choices=choices)
-        if approved and movie != expected_movie:
-            return reply("state_changed", "The catalogue result changed. Start a new video request.", intent)
         if intent.operation == "prepare":
             await self.playback.ready(source)
             return reply("prepared", "The film is resolved and the TV is ready. No playback was requested.",
@@ -172,20 +164,8 @@ class VideoCapability:
             raise VideoNotReady()
         states = await self.playback.snapshot()
         apple, sony = states
-        if sony["state"] != "off" and sony["attributes"].get("source") != source:
-            raise VideoNotReady()
-        if approved and fingerprint(states) != expected_view:
-            return reply("state_changed", "Viewing changed since confirmation was requested. Start again.", intent)
-        if not approved and self.playback.occupied(states):
-            if request.conversation_id and request.origin:
-                self.pending[caller] = (time.monotonic() + CONFIRM_SECONDS, intent, movie,
-                                        fingerprint(states), source)
-                speech = (f"The TV may be in use. Replace viewing with {movie.title} ({movie.year}) in the living room? "
-                          "Say confirm video takeover within 60 seconds.")
-            else:
-                speech = "The TV may be in use. A stable conversation is required for explicit video takeover confirmation."
-            return reply("confirmation_required", speech, intent)
         waking = sony["state"] == "off" or apple["state"] in {"off", "standby"}
+        needs_input = sony["attributes"].get("source") != source
         if waking:
             if request._video_deadline != "extended-v1" or intent.operation != "play":
                 if request._video_deadline == "negotiate-v1" and intent.operation == "play":
@@ -194,24 +174,30 @@ class VideoCapability:
                 raise VideoNotReady()
             async with asyncio.timeout_at(deadline - PLAYBACK_RESERVE_SECONDS):
                 states = await self.playback.wake(states, source, mutate)
+        elif needs_input:
+            states = await self.playback.wake(states, source, mutate)
         if (await self.playback.automation())["current"]:
             raise VideoNotReady()
         # Never treat changed viewing as consent.
         if fingerprint(await self.playback.snapshot()) != fingerprint(states):
-            if waking:
+            if waking or needs_input:
                 raise VideoNotReady()
             return reply("state_changed", "Viewing changed before playback. No command was sent.", intent)
         if waking and asyncio.get_running_loop().time() >= deadline - PLAYBACK_RESERVE_SECONDS:
             raise VideoNotReady()
-        await mutate(self.playback.launch, movie)
-        if not await self.playback.verify(movie, source):
-            return reply("uncertain", "I sent the request but could not verify playback. Check the TV; I will not retry.", intent)
-        if self.hold_path is not None:
-            self.hold_path.unlink()
-            self.sync_hold_directory()
-        self.uncertain = False
-        return reply("playing", "Verified the requested film is playing on the living room TV.",
-                     intent, movie=movie.as_dict())
+        apple = states[0]
+        title, exact_id = self.playback.observed_movie(apple, movie)
+        already_playing = apple["state"] == "playing" and (exact_id or (title and not apple["attributes"].get("media_content_id")))
+        if not already_playing:
+            await mutate(self.playback.launch, movie)
+        evidence = await self.playback.complete(movie, source, states, mutate, command_accepted=not already_playing)
+        if evidence["identity_verified"] and evidence["progress_verified"]:
+            return reply("playing", "Verified the requested film is playing on the living room TV.",
+                         intent, movie=movie.as_dict(), playback_evidence=evidence)
+        speech = ("Infuse reports the requested title playing, but I could not verify its identity and progress."
+                  if evidence["playing_observed"] else
+                  "I could not verify playback. Check the TV. I will not retry.")
+        return reply("uncertain", speech, intent, playback_evidence=evidence)
 
 
 video_capability = VideoCapability(hold_path=VIDEO_HOLD_PATH)
