@@ -166,3 +166,254 @@ def test_bounded_polite_prefix_preserves_title_and_destination(text,title,year,r
     "Can you tell me about Moana?", "I wonder if you could play Moana"])
 def test_polite_prefix_does_not_broaden_film_ownership(text):
     assert recognise(text) is None
+
+
+@pytest.mark.parametrize("text,title,explicit", [
+    ("Play Babe", "Babe", False),
+    ("Play Babe on TV", "Babe", True),
+    ("Put on Babe", "Babe", False),
+    ("Put on The Goonies on the TV", "The Goonies", True),
+    ("Play the movie Descendants", "Descendants", True),
+    ("Put the film Babe on", "Babe", True),
+    ("Could you put on Descendants on TV?", "Descendants", True),
+    ("Play Friday the 13th on TV", "Friday the 13th", True),
+])
+def test_campaign_play_phrases(text, title, explicit):
+    intent = recognise(text, allow_unknown=True)
+    assert (intent.title, intent.explicit, intent.operation) == (title, explicit, "play")
+
+
+@pytest.mark.parametrize("text", ["Put Babe on the TV", "Hit the Goonies on TV", "Put on some music",
+    "Play the Descendants soundtrack", "Play Babe on the office speaker", "Play the song Frozen"])
+def test_malformed_speech_and_explicit_music_do_not_enter_video_ownership(text):
+    assert recognise(text, allow_unknown=True) is None
+
+
+@pytest.fixture
+def coordination(monkeypatch):
+    from app.adapters.jellyfin import Movie
+    from app.capabilities import dispatcher, media
+    from app.music.models import ResolvedMusicCandidate
+
+    film = Movie("a" * 32, "Frozen", 2013, "109445")
+    song = ResolvedMusicCandidate("m1", "library://track/1", "track", "Frozen")
+    lookup = AsyncMock(return_value=("resolved", film, []))
+    search = AsyncMock(return_value=(None, song))
+    music = AsyncMock(return_value={"name": "Frozen", "target_name": "Office Echo"})
+    video = AsyncMock(return_value=media.response("test_video", "Video executed"))
+    coordinator = media.MediaCoordinator()
+    monkeypatch.setenv("VIDEO_ENABLED", "true")
+    monkeypatch.setattr(dispatcher, "media_coordinator", coordinator)
+    monkeypatch.setattr(media.video_capability.catalogue, "lookup", lookup)
+    monkeypatch.setattr(media.video_capability, "handle", video)
+    monkeypatch.setattr(media.music, "probe_exact", search)
+    monkeypatch.setattr(media.music, "play_candidate", music)
+    return coordinator, film, song, lookup, search, music, video
+
+
+def media_request(text, request_id, **changes):
+    fields = dict(conversation_id="one", origin="home_assistant", user_context="user-one",
+                  area="Office area", satellite=None)
+    fields.update(changes)
+    return VoiceRequest(text=text, request_id=request_id, **fields)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer,expected", [("The film", "test_video"), ("The movie", "test_video"),
+    ("The music", "music"), ("The song", "music"), ("Cancel", "cancelled")])
+async def test_media_choice_consumes_only_one_capability(coordination, answer, expected):
+    from app.capabilities.dispatcher import dispatch_capabilities
+
+    _, film, _, _, _, music, video = coordination
+    first = await dispatch_capabilities(media_request("Play Frozen", "original"))
+    assert first.metadata["operation_status"] == "clarification_required"
+    assert first.metadata["continue_conversation"] is True
+    music.assert_not_awaited()
+    video.assert_not_awaited()
+    reply = media_request(answer, "answer")
+    result = await dispatch_capabilities(reply)
+    assert result.metadata.get("operation_status", result.domain) == expected
+    duplicate = await dispatch_capabilities(reply)
+    assert duplicate.metadata["operation_status"] == "already_processed"
+    assert video.await_count == int(expected == "test_video")
+    assert music.await_count == int(expected == "music")
+    if expected == "music":
+        assert music.await_args.args[-1] == "office"
+    if expected == "test_video":
+        assert video.await_args.kwargs["expected_movie"] == film
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changes", [{"user_context": "other"}, {"conversation_id": "other"},
+    {"satellite": "assist_satellite.kitchen"}, {"user_context": None}, {"origin": "different"}])
+async def test_short_choice_cannot_cross_context(coordination, changes):
+    from app.capabilities.dispatcher import dispatch_capabilities
+
+    *_, music, video = coordination
+    await dispatch_capabilities(media_request("Play Frozen", "original"))
+    denied = await dispatch_capabilities(media_request("The film", "other", **changes))
+    assert denied.metadata["operation_status"] == "choice_required"
+    video.assert_not_awaited()
+    music.assert_not_awaited()
+    await dispatch_capabilities(media_request("The film", "allowed"))
+    video.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user_context", [None, "device-account"])
+async def test_shared_satellite_requires_fresh_explicit_command(coordination, user_context):
+    from app.capabilities.dispatcher import dispatch_capabilities
+
+    *_, music, video = coordination
+    context = {"user_context": user_context, "satellite": "assist_satellite.office"}
+    result = await dispatch_capabilities(media_request("Play Frozen", "bare", **context))
+    assert result.metadata["operation_status"] == "choice_required"
+    assert not result.metadata["continue_conversation"]
+    result = await dispatch_capabilities(media_request("The film", "answer", **context))
+    assert result.metadata["operation_status"] == "choice_required"
+    video.assert_not_awaited()
+    music.assert_not_awaited()
+    await dispatch_capabilities(media_request("Play the movie Frozen", "explicit", **context))
+    video.assert_awaited_once()
+    music.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_expiry_unrelated_turn_and_fresh_explicit_command(coordination, monkeypatch):
+    from app.capabilities import dispatcher, media
+
+    _, _, _, _, _, play_music, video = coordination
+    ticks = [0]
+    monkeypatch.setattr(media, "time", type("Clock", (), {"monotonic": staticmethod(lambda: ticks[0])}))
+    monkeypatch.setattr(dispatcher.music_capability, "handle",
+                        AsyncMock(return_value=media.CapabilityResult(False, False, None, "not_claimed")))
+    await dispatcher.dispatch_capabilities(media_request("Play Frozen", "original"))
+    with monkeypatch.context() as isolated:
+        unclaimed = media.CapabilityResult(False, False, None, "not_claimed")
+        isolated.setattr(dispatcher.video_capability, "handle", AsyncMock(return_value=unclaimed))
+        assert await dispatcher.dispatch_capabilities(media_request("What time is it?", "unrelated")) is None
+    video.assert_not_awaited()
+    play_music.assert_not_awaited()
+    ticks[0] = 61
+    result = await dispatcher.dispatch_capabilities(media_request("The film", "expired"))
+    assert result.metadata["operation_status"] == "choice_required"
+    video.assert_not_awaited()
+    await dispatcher.dispatch_capabilities(media_request("Play Frozen", "another"))
+    await dispatcher.dispatch_capabilities(media_request("Play the movie Frozen", "explicit"))
+    result = await dispatcher.dispatch_capabilities(media_request("The film", "old-answer"))
+    assert result.metadata["operation_status"] == "choice_required"
+    video.assert_awaited_once()
+    play_music.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["film_only", "music_only", "neither", "editions", "film_down", "music_down"])
+async def test_generic_media_uses_both_catalogues(coordination, case, monkeypatch):
+    from app.adapters.jellyfin import CatalogueUnavailable
+    from app.capabilities import dispatcher, media
+
+    _, _, _, lookup, search, music, video = coordination
+    if case in {"music_only", "neither"}:
+        lookup.return_value = ("not_found", None, [])
+    if case in {"film_only", "neither"}:
+        search.return_value = (None, None)
+    if case == "editions":
+        lookup.return_value = ("ambiguous", None, [{"year": 2013}, {"year": 2019}])
+    if case == "film_down":
+        lookup.side_effect = CatalogueUnavailable
+    if case == "music_down":
+        search.side_effect = ValueError
+    fallback = AsyncMock(return_value=media.CapabilityResult(False, False, None, "not_claimed"))
+    monkeypatch.setattr(dispatcher.music_capability, "handle", fallback)
+    request = media_request("Play Frozen", "original")
+    result = await dispatcher.dispatch_capabilities(request)
+    assert video.await_count == int(case == "film_only")
+    assert music.await_count == int(case == "music_only")
+    if case == "neither":
+        assert result is None
+        fallback.assert_awaited_once_with(request, catalogue_checked=True)
+    elif case in {"film_down", "music_down", "editions"}:
+        assert result.metadata["operation_status"] == (
+            "clarification_required" if case == "editions" else "unavailable")
+        fallback.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_changed_music_choice_is_not_played(coordination):
+    from dataclasses import replace
+    from app.capabilities.dispatcher import dispatch_capabilities
+
+    _, _, song, _, search, music, video = coordination
+    await dispatch_capabilities(media_request("Play Frozen", "original"))
+    search.return_value = (None, replace(song, uri="library://track/other"))
+    result = await dispatch_capabilities(media_request("The music", "changed"))
+    assert result.metadata["operation_status"] == "candidate_changed"
+    music.assert_not_awaited()
+    video.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_clarified_video_handoff_is_bound_and_single_use(coordination):
+    from app.capabilities import dispatcher, media, video as video_module
+
+    _, film, _, _, _, music, video = coordination
+    intent = recognise("Play Frozen", allow_unknown=True)
+    video.side_effect = [
+        video_module.reply("video_deadline_required", "Wake budget.", intent, request_id="answer"),
+        media.response("test_video", "Video executed"),
+    ]
+    await dispatcher.dispatch_capabilities(media_request("Play Frozen", "original"))
+    reply = media_request("The film", "answer")
+    reply._video_deadline = "negotiate-v1"
+    offer = await dispatcher.dispatch_capabilities(reply)
+    assert offer.domain == "video" and offer.result["request_id"] == "answer"
+    reply._video_deadline = "extended-v1"
+    assert (await dispatcher.dispatch_capabilities(reply)).metadata["operation_status"] == "test_video"
+    assert (await dispatcher.dispatch_capabilities(reply)).metadata["operation_status"] == "already_processed"
+    assert video.await_count == 2
+    assert video.await_args.kwargs["expected_movie"] == film
+    music.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_media_cancel_does_not_consume_pending_nutrition(coordination, monkeypatch):
+    from app.capabilities import dispatcher
+
+    *_, music, video = coordination
+    await dispatcher.dispatch_capabilities(media_request("Play Frozen", "original"))
+    monkeypatch.setenv("NUTRITION_ENABLED", "true")
+    monkeypatch.setattr(dispatcher, "is_followup", lambda _: True)
+    result = await dispatcher.dispatch_capabilities(media_request("Cancel", "ambiguous"))
+    assert result.metadata["operation_status"] == "clarification_required"
+    result = await dispatcher.dispatch_capabilities(media_request("Cancel media", "explicit"))
+    assert result.metadata["operation_status"] == "cancelled"
+    music.assert_not_awaited()
+    video.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["artist", "album", "track", "playlist"])
+async def test_exact_music_probe_uses_read_only_library_search(monkeypatch, kind):
+    from app.adapters.music_assistant import ha_client
+    from app.music.service import probe_exact
+
+    groups = dict.fromkeys(("artists", "albums", "tracks", "playlists", "radio", "audiobooks", "podcasts"), [])
+    groups[kind + "s"] = [{"name": "Fixture", "uri": "library://fixture/1", "media_type": kind}]
+    call = AsyncMock(return_value={"service_response": groups})
+    monkeypatch.setattr(ha_client, "call_service", call)
+    session, candidate = await probe_exact("Fixture")
+    assert (candidate.name, candidate.media_type) == ("Fixture", kind)
+    assert session.resolve(candidate.candidate_id) == candidate
+    assert call.await_args.args[:2] == ("music_assistant", "search")
+    assert call.await_args.args[2]["library_only"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response", [{}, {"service_response": {}}, {"service_response": {"artists": []}}])
+async def test_incomplete_music_evidence_is_not_an_empty_catalogue(monkeypatch, response):
+    from app.adapters.music_assistant import ha_client
+    from app.music.service import probe_exact
+
+    monkeypatch.setattr(ha_client, "call_service", AsyncMock(return_value=response))
+    with pytest.raises(ValueError, match="Incomplete"):
+        await probe_exact("Fixture")

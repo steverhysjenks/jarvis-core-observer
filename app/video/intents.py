@@ -11,25 +11,32 @@ class VideoIntent:
     title: str = ""
     year: int | None = None
     room: str | None = None
+    explicit: bool = False
+    music_query: str | None = None
 
 
-def recognise(text: str) -> VideoIntent | None:
+def recognise(text: str, *, allow_unknown: bool = False) -> VideoIntent | None:
     text = re.sub(r"^(?:ask jarvis to\s+|jarvis[, :]\s*)", "", text.strip(), flags=re.I)
     # Strip only a leading polite play request. Title data and ownership rules
     # below are unchanged; unknown bare names do not become film requests.
-    text = re.sub(r"^(?:can|could)\s+you\s+(?=play\s)", "", text, flags=re.I)
+    text = re.sub(r"^(?:can|could)\s+you\s+(?=(?:play|put)\s)", "", text, flags=re.I)
     text = text.rstrip(".!?").strip()
     if text.lower() == "confirm video takeover":
         return VideoIntent("confirm")
     if text.lower() == "cancel video takeover":
         return VideoIntent("cancel")
-    match = re.fullmatch(r"(?:play\s+(.+)|get\s+(.+?)\s+ready(?:\s+(.+))?)", text, re.I | re.S)
+    trailing = re.fullmatch(r"put\s+((?:the\s+)?(?:movie|film)\s+.+)\s+on", text, re.I | re.S)
+    if trailing:
+        text = "play " + trailing[1]
+    match = re.fullmatch(r"(?:(?:play|put\s+on)\s+(.+)|get\s+(.+?)\s+ready(?:\s+(.+))?)", text, re.I | re.S)
     if not match:
         return None
     operation = "play" if match[1] else "prepare"
     body = match[1] or match[2]
     suffix = match[3]
-    if re.match(r"(?:the\s+)?(?:song|track|album|artist|playlist|music)\b", body, re.I):
+    if (re.match(r"(?:(?:the|some)\s+)?(?:song|track|album|artist|playlist|music)\b", body, re.I)
+            or re.search(r"\b(?:soundtrack|music|songs|tracks|playlist)\s*$", body, re.I)
+            or re.search(r"\s+(?:on|through)\s+(?:the\s+)?(?:(?:[\w-]+\s+){0,5})?(?:speakers?|spotify|music assistant)\s*$", body, re.I)):
         return None
     # Only a terminal television destination is syntax; "on" inside a title is data.
     target = re.fullmatch(r"(.+)\s+(on\s+(?:the\s+)?(?:(?:[\w-]+\s+){0,5})?(?:tv|television))", body, re.I | re.S)
@@ -42,16 +49,19 @@ def recognise(text: str) -> VideoIntent | None:
     title = year_match[1].strip() if year_match else body.strip()
     if suffix and not re.search(r"\b(?:tv|television)\b", suffix, re.I) and not explicit_movie:
         return None
-    if not (suffix or explicit_movie or normalise(title) in catalogue_titles()):
+    explicit = bool(suffix or explicit_movie)
+    known = explicit or normalise(title) in catalogue_titles()
+    if not known and (not allow_unknown or operation != "play"
+                      or re.match(r"^(?:some|something)\s+", title, re.I)):
         return None
     # Claim explicit malformed video requests so they cannot become device inference.
     if (not title or len(title) > 180 or re.search(r"[;\x00-\x1f/\\]|\b(?:https?|file|infuse|data|javascript):|www\.|\b(?:and then|then|and play|and turn)\b", title, re.I)
             or (year is not None and not 1888 <= year <= 2100)):
-        return VideoIntent("invalid")
+        return VideoIntent("invalid") if known else None
     room = None
     if suffix:
         room_match = re.fullmatch(r"on\s+(?:the\s+)?(?:(.+?)\s+)?(?:tv|television)", suffix, re.I)
         if not room_match:
             return VideoIntent("invalid")
         room = room_match[1].strip().casefold() if room_match[1] else "living room"
-    return VideoIntent(operation, title, year, room)
+    return VideoIntent(operation, title, year, room, explicit, body.strip() if not explicit else None)

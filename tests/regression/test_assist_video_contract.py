@@ -126,6 +126,10 @@ def chain(monkeypatch, tmp_path):
     catalogue = AsyncMock()
     catalogue.lookup.return_value = "resolved", Movie("a" * 32, "Forrest Gump", 1994, "13"), []
     cap = VideoCapability(catalogue, playback.VideoPlayback(ha))
+    from app.capabilities import media
+    monkeypatch.setattr(dispatcher, "media_coordinator", media.MediaCoordinator())
+    monkeypatch.setattr(media.music, "probe_exact", AsyncMock(return_value=(None, None)))
+    monkeypatch.setattr(dispatcher.video_capability, "catalogue", catalogue)
     monkeypatch.setattr(dispatcher.video_capability, "handle", cap.handle)
     forbidden = AsyncMock(side_effect=AssertionError("Video fell through to music or a nutrition write"))
     monkeypatch.setattr(dispatcher.music_capability, "handle", forbidden)
@@ -169,7 +173,7 @@ async def test_explicit_play_and_followup_keep_canonical_session(chain):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("text", ["Get Forrest Gump ready on the TV", "Ask Jarvis to play the movie KPop Demon Hunters",
     "Play the movie On the Waterfront", "Play the movie The Girl on the Train", "Play Captain America on the TV",
-    "Play Moana", "Play Top Gun", "Play Top Gun: Maverick", "Play Moana 2"])
+    "Put on Moana on TV", "Play Top Gun on TV", "Play Top Gun: Maverick on TV", "Put the film Moana 2 on"])
 async def test_explicit_video_bypasses_only_generic_nutrition_followup(text, chain):
     c = chain
     c.catalogue.lookup.return_value = "not_found", None, []
@@ -218,11 +222,11 @@ async def test_transport_error_still_returns_canonical_chat_id(chain):
 async def test_music_and_unclaimed_conversation_keep_existing_router_paths(chain, monkeypatch):
     c = chain
     async def music(request):
-        if request.text == "Play jazz":
+        if request.text == "Play some jazz music":
             return CapabilityResult(True, False, "music", "fixture", {})
         return CapabilityResult(False, False, None, "not_claimed")
     monkeypatch.setattr(dispatcher.music_capability, "handle", AsyncMock(side_effect=music))
-    await c.method(c.agent, c.user("Play jazz"), c.chat())
+    await c.method(c.agent, c.user("Play some jazz music"), c.chat())
     assert not c.transport.semantic
     assert "music request" in c.transport.responses[-1]["speech"]
     await c.method(c.agent, c.user("Who wrote Hamlet?"), c.chat())
@@ -271,7 +275,7 @@ async def test_nutrition_read_keeps_its_existing_owned_contract(chain, monkeypat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("text,expected", [("Could you play Moana?","ambiguous"),("Can you play Top Gun: Maverick (2022)?","uncertain"),("Play Top Gun","not_found"),("Play Moana","ambiguous"),
+@pytest.mark.parametrize("text,expected", [("Could you play Moana?","clarification_required"),("Can you play Top Gun: Maverick (2022)?","uncertain"),("Play Top Gun on TV","not_found"),("Play Moana","clarification_required"),
     ("Play Top Gun: Maverick","uncertain"),("Play Moana 2","uncertain")])
 async def test_observed_bare_catalogue_outcomes_remain_video_owned(text,expected,chain):
     from app.adapters.jellyfin import resolve
@@ -282,7 +286,7 @@ async def test_observed_bare_catalogue_outcomes_remain_video_owned(text,expected
     async def lookup(title,year=None):return resolve({"Items":items,"TotalRecordCount":len(items)},title,year)
     c.catalogue.lookup.side_effect=lookup
     await c.method(c.agent,c.user(text),c.chat())
-    assert c.transport.responses[-1]["domain"]=="video"
+    assert c.transport.responses[-1]["domain"] == ("media" if expected == "clarification_required" else "video")
     assert c.transport.responses[-1]["operation_status"]==expected and not c.transport.semantic
     assert dialogue.load(c.nutrition_context)=={"query":""}
     if expected == "uncertain":
@@ -293,7 +297,7 @@ async def test_observed_bare_catalogue_outcomes_remain_video_owned(text,expected
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("text", ["Play the song Moana","Play the album Moana 2","Ask Jarvis to play Taylor Swift"])
+@pytest.mark.parametrize("text", ["Play the song Moana","Play the album Moana 2","Ask Jarvis to play the artist Taylor Swift"])
 async def test_indexed_film_names_do_not_consume_explicit_or_unrelated_music(text,chain,monkeypatch):
     c=chain
     music=AsyncMock(return_value=CapabilityResult(True,False,"music","fixture",{}))
@@ -424,7 +428,7 @@ async def test_native_get_state_failure_is_not_retried_through_router(chain):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("text,query", [("Play Moa", "Moa"), ("play Stereophonics", "Stereophonics"),
+@pytest.mark.parametrize("text,query", [("Play the song Moa", "Moa"), ("play the artist Stereophonics", "Stereophonics"),
                                        ("Play the song Moana on the office speaker", "Moana")])
 async def test_assist_music_keeps_origin_area_and_music_assistant_path(text, query, chain, monkeypatch):
     from app.capabilities import music
@@ -443,3 +447,28 @@ async def test_assist_music_keeps_origin_area_and_music_assistant_path(text, que
     stage.native._async_process_intent_result.assert_not_awaited()
     c.catalogue.lookup.assert_not_awaited()
     c.ha.call_service.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_assist_clarification_uses_canonical_conversation_and_executes_only_video(chain, monkeypatch):
+    from app.capabilities import media
+    from app.music.models import ResolvedMusicCandidate
+
+    candidate = ResolvedMusicCandidate("m1", "library://track/1", "track", "Forrest Gump")
+    monkeypatch.setattr(media.music, "probe_exact", AsyncMock(return_value=(None, candidate)))
+    play_music = AsyncMock()
+    monkeypatch.setattr(media.music, "play_candidate", play_music)
+    c = chain
+    first_input = c.user("Play Forrest Gump")
+    first_input.satellite_id = None
+    first = await c.method(c.agent, first_input, c.chat())
+    assert first.conversation_id == CANONICAL_ID and first.continue_conversation
+    assert c.transport.responses[-1]["domain"] == "media"
+    c.ha.call_service.assert_not_awaited()
+    second_input = c.user("The film", first.conversation_id)
+    second_input.satellite_id = None
+    second = await c.method(c.agent, second_input, c.chat())
+    assert second.conversation_id == first.conversation_id and not second.continue_conversation
+    c.ha.call_service.assert_awaited_once()
+    play_music.assert_not_awaited()
+    assert dialogue.load(c.nutrition_context) == {"query": ""}
