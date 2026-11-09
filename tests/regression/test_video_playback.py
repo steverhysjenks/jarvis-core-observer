@@ -114,7 +114,6 @@ async def test_legacy_takeover_phrases_never_start_playback(workflow, phrase, st
 @pytest.mark.asyncio
 @pytest.mark.parametrize("text,kwargs,status", [
     ("Play Forrest Gump on the bedroom TV", {}, "unsupported_room"),
-    ("Play Forrest Gump", {"area": "media_player.other"}, "unsupported_room"),
     ("Play Forrest Gump on the TV", {"request_id": None}, "invalid_request"),
     ("Play https://unsafe.invalid on the TV", {}, "invalid_request"),
     ("Play Forrest Gump; turn off lights on the TV", {}, "invalid_request"),
@@ -613,3 +612,23 @@ async def test_poc_followups_require_observed_target(monkeypatch, mode, expected
         "identity_verified": mode == "stale", "progress_verified": False,
     }
     assert cap.uncertain is bool(expected)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("area", ["Office area", "Kitchen", "Living Room"])
+async def test_video_defaults_to_living_room_independent_of_satellite_area(workflow, area):
+    cap, client, _, _ = workflow
+    result = await cap.handle(request("Play Forrest Gump", area=area))
+    assert result.result["status"] in {"playing", "uncertain"}
+    client.call_service.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_selected_movie_must_still_match_before_device_access(workflow):
+    from dataclasses import replace
+
+    cap, client, _, _ = workflow
+    result = await cap.handle(request(), expected_movie=replace(MOVIE, item_id="b" * 32))
+    assert result.result["status"] == "candidate_changed"
+    client.get_state.assert_not_awaited()
+    client.call_service.assert_not_awaited()

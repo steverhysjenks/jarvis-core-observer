@@ -1,4 +1,5 @@
 from app.adapters.music_assistant import (
+    MAX_SEARCH_RESULTS,
     MusicAssistantAdapter,
     MusicSearchResult,
 )
@@ -182,6 +183,19 @@ def select_exact_candidate(
     # This also gives us stable behaviour for equivalent
     # copies of the same recording.
     return exact[0]
+
+
+async def probe_exact(query: str):
+    """Read-only evidence for generic play ownership, using normal music selection."""
+    results = await music_assistant.search(query, limit=MAX_SEARCH_RESULTS, strict=True)
+    wanted = query.strip().casefold()
+    exact = [item for item in results if item.name.strip().casefold() == wanted]
+    if not exact and any(sum(item.media_type == kind for item in results) >= MAX_SEARCH_RESULTS
+                         for kind in ("artist", "album", "track", "playlist")):
+        raise ValueError("Music Assistant search reached its result limit")
+    session = MusicSearchSession(exact)
+    candidate = select_exact_candidate(session, query)
+    return (session, session.resolve(candidate.candidate_id)) if candidate else (session, None)
 
 
 async def play_explicit(

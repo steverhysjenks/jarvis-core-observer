@@ -49,6 +49,7 @@ class MusicAssistantAdapter:
         limit: int = 5,
         library_only: bool = True,
         username: str | None = None,
+        strict: bool = False,
     ) -> list[MusicSearchResult]:
 
         query = name.strip()
@@ -98,6 +99,17 @@ class MusicAssistantAdapter:
             "service_response",
             {},
         )
+
+        if strict:
+            groups = ("artists", "albums", "tracks", "playlists", "radio", "audiobooks", "podcasts")
+            if (not isinstance(service_response, dict)
+                    or any(not isinstance(service_response.get(group), list) for group in groups)
+                    or any(not isinstance(item, dict)
+                           or not isinstance(item.get("name"), str) or not item["name"].strip()
+                           or not isinstance(item.get("uri"), str) or not item["uri"].strip()
+                           or item.get("media_type") not in ALLOWED_MEDIA_TYPES
+                           for group in groups for item in service_response[group])):
+                raise ValueError("Incomplete Music Assistant search response")
 
         results: list[MusicSearchResult] = []
 

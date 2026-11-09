@@ -16,6 +16,8 @@ class MusicCapability:
     async def handle(
         self,
         request: VoiceRequest,
+        *,
+        catalogue_checked: bool = False,
     ) -> CapabilityResult:
         area = canonical_area(request.area)
 
@@ -47,6 +49,11 @@ class MusicCapability:
                 domain=None,
                 path="not_claimed",
             )
+
+        if catalogue_checked and music_intent.retrieval_type == "explicit":
+            # A verified bare-title miss must not acquire a different exact title
+            # through the semantic classifier.
+            return CapabilityResult(False, False, None, "not_claimed")
 
         # Explicit requests are currently the only semantic
         # music requests authorised to cause playback.

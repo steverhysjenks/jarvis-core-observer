@@ -42,6 +42,12 @@ The owner requires play to start from standby. The preceding ready-only decision
 
 Home Assistant media-player entities provide primary state. When Sony reports off, Core reads the paired plug once as corroboration. Only a valid, fresh reading above 5 W vetoes wake. Stale or unavailable meter readings leave the HA device states in control. Core rechecks device state and automation activity before wake, and still requires observed readiness after wake. Unknown or unavailable media-player states block execution.
 
+### 9 November 2026 media ownership amendment
+
+Core coordinates generic play requests before video or music execution. Jellyfin remains the film identity authority. Music Assistant supplies exact library candidates through a read-only search. Explicit film and music requests retain their respective paths. An explicit film defaults to the living-room TV independently of the request's originating area. The same default applies after deterministic film selection for a bare title. An unavailable or incomplete catalogue cannot establish that the other type is the only match.
+
+If both media types match, Core asks for the type before execution. An authenticated Home Assistant user can answer for 60 seconds within the same canonical conversation and origin context. An unauthenticated satellite turn must name the media explicitly in a new request. Pending choices and request receipts are bounded and kept in memory. The selected identity is rechecked before execution. For cold video, the existing Router deadline offer carries the same request ID, with a Core-held one-use reservation. Durable video uncertainty safeguards are unchanged. A rollback discards pending choices and retains any on-disk uncertainty hold.
+
 ## References
 
 - [ADR 003: grounded media](003-retrieval-grounded-music.md).

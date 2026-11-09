@@ -7,7 +7,7 @@ from pathlib import Path
 import time
 
 from app.adapters.homeassistant import HomeAssistantError
-from app.adapters.jellyfin import CatalogueUnavailable, jellyfin_client
+from app.adapters.jellyfin import CatalogueUnavailable, Movie, jellyfin_client
 from app.capabilities.models import CapabilityResult
 from app.video.intents import recognise
 from app.video.playback import VideoNotReady, VideoPlayback, fingerprint
@@ -38,7 +38,7 @@ def context(request):
 
 
 def room_for(intent, request):
-    room = intent.room or request.area or "living room"
+    room = intent.room or "living room"
     room = room.casefold().replace("_", " ").strip()
     return "living room" if room in {"living room", "lounge"} else None
 
@@ -88,8 +88,8 @@ class VideoCapability:
         finally:
             os.close(fd)
 
-    async def handle(self, request):
-        intent = recognise(request.text)
+    async def handle(self, request, *, intent=None, expected_movie: Movie | None = None, max_seconds=None):
+        intent = intent or recognise(request.text)
         if intent is None or (request._video_deadline == "extended-v1" and intent.operation != "play"):
             return CapabilityResult(False, False, None, "not_claimed")
         if os.environ.get("VIDEO_ENABLED", "false").lower() != "true":
@@ -106,6 +106,8 @@ class VideoCapability:
             extended = request._video_deadline == "extended-v1" and intent.operation == "play"
             timeout = (COLD_PLAY_DEADLINE_SECONDS if extended else
                        PLAY_DEADLINE_SECONDS if intent.operation == "play" else DEADLINE_SECONDS)
+            if max_seconds is not None:
+                timeout = min(timeout, max_seconds)
             async with asyncio.timeout(timeout) as budget:
                 async with self.lock:
                     now = time.monotonic()
@@ -133,7 +135,7 @@ class VideoCapability:
                                 self.persist_hold()
                                 started = self.uncertain = True
                             await action(*args)
-                        result = await self.execute(intent, request, mutate, budget.when(), evidence)
+                        result = await self.execute(intent, request, mutate, budget.when(), evidence, expected_movie)
                     if result.result["status"] == "playing" and started:
                         if self.hold_path is not None:
                             self.hold_path.unlink()
@@ -162,11 +164,13 @@ class VideoCapability:
                 self.requests[key] = time.monotonic() + CACHE_SECONDS, signature, result
             return result
 
-    async def execute(self, intent, request, mutate, deadline, evidence):
+    async def execute(self, intent, request, mutate, deadline, evidence, expected_movie=None):
         source = os.environ.get("VIDEO_TV_SOURCE", "")
         if room_for(intent, request) is None:
             return reply("unsupported_room", "Only the living room TV is configured for video.", intent)
         status, movie, choices = await self.catalogue.lookup(intent.title, intent.year)
+        if expected_movie is not None and (status != "resolved" or movie != expected_movie):
+            return reply("candidate_changed", "The film match changed. Please request it again.", intent)
         if status != "resolved":
             return reply(status, "Please give a unique film title and year." if status == "ambiguous" else
                          "I could not find that exact film in the movie library.", intent, choices=choices)
