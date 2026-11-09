@@ -213,7 +213,7 @@ def coordination(monkeypatch):
 
 def media_request(text, request_id, **changes):
     fields = dict(conversation_id="one", origin="home_assistant", user_context="user-one",
-                  area="Office area", satellite="assist_satellite.office")
+                  area="Office area", satellite=None)
     fields.update(changes)
     return VoiceRequest(text=text, request_id=request_id, **fields)
 
@@ -260,11 +260,12 @@ async def test_short_choice_cannot_cross_context(coordination, changes):
 
 
 @pytest.mark.asyncio
-async def test_shared_satellite_requires_fresh_explicit_command(coordination):
+@pytest.mark.parametrize("user_context", [None, "device-account"])
+async def test_shared_satellite_requires_fresh_explicit_command(coordination, user_context):
     from app.capabilities.dispatcher import dispatch_capabilities
 
     *_, music, video = coordination
-    context = {"user_context": None}
+    context = {"user_context": user_context, "satellite": "assist_satellite.office"}
     result = await dispatch_capabilities(media_request("Play Frozen", "bare", **context))
     assert result.metadata["operation_status"] == "choice_required"
     assert not result.metadata["continue_conversation"]

@@ -12,6 +12,7 @@ class VideoIntent:
     year: int | None = None
     room: str | None = None
     explicit: bool = False
+    music_query: str | None = None
 
 
 def recognise(text: str, *, allow_unknown: bool = False) -> VideoIntent | None:
@@ -50,7 +51,8 @@ def recognise(text: str, *, allow_unknown: bool = False) -> VideoIntent | None:
         return None
     explicit = bool(suffix or explicit_movie)
     known = explicit or normalise(title) in catalogue_titles()
-    if not known and not (allow_unknown and operation == "play"):
+    if not known and (not allow_unknown or operation != "play"
+                      or re.match(r"^(?:some|something)\s+", title, re.I)):
         return None
     # Claim explicit malformed video requests so they cannot become device inference.
     if (not title or len(title) > 180 or re.search(r"[;\x00-\x1f/\\]|\b(?:https?|file|infuse|data|javascript):|www\.|\b(?:and then|then|and play|and turn)\b", title, re.I)
@@ -62,4 +64,4 @@ def recognise(text: str, *, allow_unknown: bool = False) -> VideoIntent | None:
         if not room_match:
             return VideoIntent("invalid")
         room = room_match[1].strip().casefold() if room_match[1] else "living room"
-    return VideoIntent(operation, title, year, room, explicit)
+    return VideoIntent(operation, title, year, room, explicit, body.strip() if not explicit else None)

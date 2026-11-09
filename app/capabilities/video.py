@@ -39,7 +39,7 @@ def context(request):
 
 def room_for(intent, request):
     room = intent.room or "living room"
-    room = room.casefold().replace("_", " ").strip()
+    room = room.casefold().replace("_", " ").replace("-", " ").strip()
     return "living room" if room in {"living room", "lounge"} else None
 
 

@@ -459,11 +459,15 @@ async def test_assist_clarification_uses_canonical_conversation_and_executes_onl
     play_music = AsyncMock()
     monkeypatch.setattr(media.music, "play_candidate", play_music)
     c = chain
-    first = await c.method(c.agent, c.user("Play Forrest Gump"), c.chat())
+    first_input = c.user("Play Forrest Gump")
+    first_input.satellite_id = None
+    first = await c.method(c.agent, first_input, c.chat())
     assert first.conversation_id == CANONICAL_ID and first.continue_conversation
     assert c.transport.responses[-1]["domain"] == "media"
     c.ha.call_service.assert_not_awaited()
-    second = await c.method(c.agent, c.user("The film", first.conversation_id), c.chat())
+    second_input = c.user("The film", first.conversation_id)
+    second_input.satellite_id = None
+    second = await c.method(c.agent, second_input, c.chat())
     assert second.conversation_id == first.conversation_id and not second.continue_conversation
     c.ha.call_service.assert_awaited_once()
     play_music.assert_not_awaited()

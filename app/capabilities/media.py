@@ -149,7 +149,7 @@ class MediaCoordinator:
         deadline = asyncio.get_running_loop().time() + SHORT_SECONDS
         try:
             async with asyncio.timeout(PROBE_SECONDS):
-                session, candidate = await music.probe_exact(pending.intent.title)
+                session, candidate = await music.probe_exact(pending.intent.music_query or pending.intent.title)
         except (HomeAssistantError, TimeoutError, ValueError, TypeError, AttributeError):
             return response("unavailable", "I could not check the music match. Please make a fresh request.")
         if candidate is None or (
@@ -178,7 +178,7 @@ class MediaCoordinator:
         async def music_probe():
             try:
                 async with asyncio.timeout(PROBE_SECONDS):
-                    return await music.probe_exact(intent.title)
+                    return await music.probe_exact(intent.music_query or intent.title)
             except (HomeAssistantError, TimeoutError, ValueError, TypeError, AttributeError):
                 return None
         try:
@@ -195,7 +195,8 @@ class MediaCoordinator:
         if status == "ambiguous":
             return response("clarification_required", "I found multiple film editions. Please request the film with its year, or name the music explicitly.")
         if movie is not None and candidate is not None:
-            if not (request.user_context and request.conversation_id and request.origin == "home_assistant"):
+            if not (request.user_context and request.conversation_id
+                    and request.origin == "home_assistant" and not request.satellite):
                 return response("choice_required", "I found a film and a music match. Please make a fresh request naming the film or the music explicitly.")
             if len(self.pending) >= MAX_ENTRIES:
                 return response("busy", "Media choices are busy. Please request the film or music explicitly.")
