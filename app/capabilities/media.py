@@ -134,7 +134,8 @@ class MediaCoordinator:
             if phrase == "cancel":
                 return None
             return response("choice_required", "Please make a fresh request naming the film or the music.")
-        if phrase == "cancel" and nutrition_followup(request):
+        if (phrase == "cancel" and os.environ.get("NUTRITION_ENABLED", "false").lower() == "true"
+                and nutrition_followup(request)):
             return response("clarification_required", "Say cancel media or nutrition cancel.", continuing=True)
         receipt = self.reserve(request)
         if isinstance(receipt, CapabilityResult):

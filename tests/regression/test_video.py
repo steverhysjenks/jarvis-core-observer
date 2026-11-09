@@ -288,7 +288,10 @@ async def test_expiry_unrelated_turn_and_fresh_explicit_command(coordination, mo
     monkeypatch.setattr(dispatcher.music_capability, "handle",
                         AsyncMock(return_value=media.CapabilityResult(False, False, None, "not_claimed")))
     await dispatcher.dispatch_capabilities(media_request("Play Frozen", "original"))
-    assert await dispatcher.dispatch_capabilities(media_request("What time is it?", "unrelated")) is None
+    with monkeypatch.context() as isolated:
+        unclaimed = media.CapabilityResult(False, False, None, "not_claimed")
+        isolated.setattr(dispatcher.video_capability, "handle", AsyncMock(return_value=unclaimed))
+        assert await dispatcher.dispatch_capabilities(media_request("What time is it?", "unrelated")) is None
     video.assert_not_awaited()
     play_music.assert_not_awaited()
     ticks[0] = 61
@@ -370,3 +373,47 @@ async def test_clarified_video_handoff_is_bound_and_single_use(coordination):
     assert video.await_count == 2
     assert video.await_args.kwargs["expected_movie"] == film
     music.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_media_cancel_does_not_consume_pending_nutrition(coordination, monkeypatch):
+    from app.capabilities import dispatcher
+
+    *_, music, video = coordination
+    await dispatcher.dispatch_capabilities(media_request("Play Frozen", "original"))
+    monkeypatch.setenv("NUTRITION_ENABLED", "true")
+    monkeypatch.setattr(dispatcher, "is_followup", lambda _: True)
+    result = await dispatcher.dispatch_capabilities(media_request("Cancel", "ambiguous"))
+    assert result.metadata["operation_status"] == "clarification_required"
+    result = await dispatcher.dispatch_capabilities(media_request("Cancel media", "explicit"))
+    assert result.metadata["operation_status"] == "cancelled"
+    music.assert_not_awaited()
+    video.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["artist", "album", "track", "playlist"])
+async def test_exact_music_probe_uses_read_only_library_search(monkeypatch, kind):
+    from app.adapters.music_assistant import ha_client
+    from app.music.service import probe_exact
+
+    groups = dict.fromkeys(("artists", "albums", "tracks", "playlists", "radio", "audiobooks", "podcasts"), [])
+    groups[kind + "s"] = [{"name": "Fixture", "uri": "library://fixture/1", "media_type": kind}]
+    call = AsyncMock(return_value={"service_response": groups})
+    monkeypatch.setattr(ha_client, "call_service", call)
+    session, candidate = await probe_exact("Fixture")
+    assert (candidate.name, candidate.media_type) == ("Fixture", kind)
+    assert session.resolve(candidate.candidate_id) == candidate
+    assert call.await_args.args[:2] == ("music_assistant", "search")
+    assert call.await_args.args[2]["library_only"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response", [{}, {"service_response": {}}, {"service_response": {"artists": []}}])
+async def test_incomplete_music_evidence_is_not_an_empty_catalogue(monkeypatch, response):
+    from app.adapters.music_assistant import ha_client
+    from app.music.service import probe_exact
+
+    monkeypatch.setattr(ha_client, "call_service", AsyncMock(return_value=response))
+    with pytest.raises(ValueError, match="Incomplete"):
+        await probe_exact("Fixture")
