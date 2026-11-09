@@ -30,6 +30,19 @@ def test_title_punctuation_is_data(title):
     assert recognise("Play the movie " + title + " on the TV").operation == "play"
 
 
+@pytest.mark.parametrize("text,operation,title", [
+    ("Play the movie, Babe.", "play", "Babe"),
+    ("Play the film: Top Gun: Maverick", "play", "Top Gun: Maverick"),
+    ("Put on the movie \u2014 Hello, Dolly! on TV", "play", "Hello, Dolly!"),
+    ("Put the film \u2013 On the Waterfront on", "play", "On the Waterfront"),
+    ("Get the movie,Babe ready", "prepare", "Babe"),
+])
+def test_punctuation_after_explicit_film_qualifier(text, operation, title):
+    intent = recognise(text)
+    assert intent is not None
+    assert (intent.operation, intent.title, intent.explicit) == (operation, title, True)
+
+
 @pytest.mark.parametrize("title", ["https://bad.invalid/a", "file:secret", "infuse:13", "data:payload", "www.bad.invalid", "A; turn off lights", "A then play B", "A\\B", "A\nB"])
 def test_unsafe_targets_remain_claimed_invalid(title):
     assert recognise("Play the movie " + title + " on the TV").operation == "invalid"

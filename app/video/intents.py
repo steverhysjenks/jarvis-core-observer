@@ -5,6 +5,9 @@ from app.adapters.jellyfin import normalise
 from app.video.title_index import catalogue_titles
 
 
+FILM_QUALIFIER = r"(?:the\s+)?(?:movie|film)(?:[ 	]*[,:\u2013\u2014][ 	]*|\s+)"
+
+
 @dataclass(frozen=True)
 class VideoIntent:
     operation: str
@@ -25,7 +28,7 @@ def recognise(text: str, *, allow_unknown: bool = False) -> VideoIntent | None:
         return VideoIntent("confirm")
     if text.lower() == "cancel video takeover":
         return VideoIntent("cancel")
-    trailing = re.fullmatch(r"put\s+((?:the\s+)?(?:movie|film)\s+.+)\s+on", text, re.I | re.S)
+    trailing = re.fullmatch(rf"put\s+({FILM_QUALIFIER}.+)\s+on", text, re.I | re.S)
     if trailing:
         text = "play " + trailing[1]
     match = re.fullmatch(r"(?:(?:play|put\s+on)\s+(.+)|get\s+(.+?)\s+ready(?:\s+(.+))?)", text, re.I | re.S)
@@ -42,8 +45,10 @@ def recognise(text: str, *, allow_unknown: bool = False) -> VideoIntent | None:
     target = re.fullmatch(r"(.+)\s+(on\s+(?:the\s+)?(?:(?:[\w-]+\s+){0,5})?(?:tv|television))", body, re.I | re.S)
     if target:
         body, suffix = target[1], target[2]
-    explicit_movie = bool(re.match(r"(?:the\s+)?(?:movie|film)\s+", body, re.I))
-    body = re.sub(r"^(?:the\s+)?(?:movie|film)\s+", "", body, flags=re.I)
+    qualifier = re.match(FILM_QUALIFIER, body, re.I)
+    explicit_movie = qualifier is not None
+    if qualifier:
+        body = body[qualifier.end():]
     year_match = re.fullmatch(r"(.+?)\s+(?:\((\d{4})\)|(\d{4}))", body)
     year = int(year_match[2] or year_match[3]) if year_match else None
     title = year_match[1].strip() if year_match else body.strip()

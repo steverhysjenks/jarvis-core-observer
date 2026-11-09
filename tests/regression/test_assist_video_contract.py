@@ -297,7 +297,21 @@ async def test_observed_bare_catalogue_outcomes_remain_video_owned(text,expected
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("text", ["Play the song Moana","Play the album Moana 2","Ask Jarvis to play the artist Taylor Swift"])
+async def test_assist_punctuated_film_qualifier_stays_video_owned(chain):
+    c = chain
+    c.catalogue.lookup.return_value = ("not_found", None, [])
+    await c.method(c.agent, c.user("Play the movie, Babe."), c.chat())
+    c.catalogue.lookup.assert_awaited_once_with("Babe", None)
+    assert c.transport.responses[-1]["domain"] == "video"
+    assert c.transport.responses[-1]["operation_status"] == "not_found"
+    assert not c.transport.semantic
+    c.forbidden.assert_not_awaited()
+    c.ha.call_service.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["Play the song Moana", "Play the album Moana 2", "Ask Jarvis to play the artist Taylor Swift",
+                                  "Play the song, Babe", "Play the album: Moana 2"])
 async def test_indexed_film_names_do_not_consume_explicit_or_unrelated_music(text,chain,monkeypatch):
     c=chain
     music=AsyncMock(return_value=CapabilityResult(True,False,"music","fixture",{}))
